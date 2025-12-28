@@ -34,14 +34,14 @@ class AiBrowserApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Neon AI Browser Ultra',
+      title: 'Neon AI Browser Ultimate',
       theme: ThemeData(
         useMaterial3: true,
         brightness: Brightness.dark,
         scaffoldBackgroundColor: Colors.black,
         colorScheme: const ColorScheme.dark(
-          primary: Color(0xFF00FFC2), // Cyan
-          secondary: Color(0xFFFF0055), // Neon Red
+          primary: Color(0xFF00FFC2),
+          secondary: Color(0xFFFF0055),
           surface: Color(0xFF121212),
         ),
       ),
@@ -51,7 +51,7 @@ class AiBrowserApp extends StatelessWidget {
   }
 }
 
-// --- PROVIDERS & LOGIC ---
+// --- PROVIDERS ---
 
 class BrowserTab {
   final String id;
@@ -71,19 +71,13 @@ class HistoryItem {
 
 class DevToolsProvider extends ChangeNotifier {
   List<String> consoleLogs = [];
-  bool isDevMode = false;
-
   void addLog(String message, ConsoleMessageLevel level) {
     final timestamp = DateTime.now().toString().substring(11, 19);
     final levelName = level.toString().split('.').last.toUpperCase();
     consoleLogs.add("[$timestamp] $levelName: $message");
     notifyListeners();
   }
-
-  void clearLogs() {
-    consoleLogs.clear();
-    notifyListeners();
-  }
+  void clearLogs() { consoleLogs.clear(); notifyListeners(); }
 }
 
 class BrowserProvider extends ChangeNotifier {
@@ -91,17 +85,19 @@ class BrowserProvider extends ChangeNotifier {
   int currentTabIndex = 0;
   List<HistoryItem> history = [];
   
-  // Settings
+  // Persistent Settings
   String searchEngine = "https://www.google.com/search?q=";
   String customUserAgent = "";
   bool isDesktopMode = false;
   bool isAdBlockEnabled = true;
+  bool isForceDarkWeb = false; // Advanced
+  bool isJsEnabled = true;     // Advanced
   bool isZenMode = false;
   
   // State
   double progress = 0;
   bool isSecure = true;
-  bool isMenuOpen = false; // Toggles the quick menu
+  bool isMenuOpen = false;
   TextEditingController urlController = TextEditingController();
   stt.SpeechToText _speech = stt.SpeechToText();
 
@@ -117,6 +113,7 @@ class BrowserProvider extends ChangeNotifier {
       isInspectable: true,
       mediaPlaybackRequiresUserGesture: false,
       allowsInlineMediaPlayback: true,
+      javaScriptEnabled: isJsEnabled, // Advanced Control
       cacheEnabled: !currentTab.isIncognito,
       domStorageEnabled: !currentTab.isIncognito,
       useWideViewPort: true,
@@ -132,6 +129,9 @@ class BrowserProvider extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     searchEngine = prefs.getString('searchEngine') ?? "https://www.google.com/search?q=";
     isAdBlockEnabled = prefs.getBool('adBlock') ?? true;
+    isForceDarkWeb = prefs.getBool('forceDark') ?? false;
+    isJsEnabled = prefs.getBool('jsEnabled') ?? true;
+    
     final h = prefs.getStringList('history') ?? [];
     history = h.map((e) => HistoryItem.fromJson(jsonDecode(e))).toList();
     notifyListeners();
@@ -141,6 +141,8 @@ class BrowserProvider extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     prefs.setString('searchEngine', searchEngine);
     prefs.setBool('adBlock', isAdBlockEnabled);
+    prefs.setBool('forceDark', isForceDarkWeb);
+    prefs.setBool('jsEnabled', isJsEnabled);
     prefs.setStringList('history', history.map((e) => jsonEncode(e.toJson())).toList());
   }
 
@@ -190,49 +192,56 @@ class BrowserProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  void toggleMenu() {
-    isMenuOpen = !isMenuOpen;
-    notifyListeners();
-  }
+  void toggleMenu() { isMenuOpen = !isMenuOpen; notifyListeners(); }
+  void toggleZenMode() { isZenMode = !isZenMode; notifyListeners(); }
 
-  void toggleZenMode() {
-    isZenMode = !isZenMode;
-    notifyListeners();
-  }
+  // --- ADVANCED SETTINGS ACTIONS ---
 
   void toggleDesktopMode() async {
     isDesktopMode = !isDesktopMode;
     await currentTab.controller?.setSettings(settings: getSettings());
-    currentTab.controller?.reload();
+    reload();
     notifyListeners();
   }
 
-  void setCustomUA(String ua) async {
-    customUserAgent = ua;
+  void toggleAdBlock() async {
+    isAdBlockEnabled = !isAdBlockEnabled;
+    await _saveData();
+    reload();
+    notifyListeners();
+  }
+
+  void toggleForceDark() async {
+    isForceDarkWeb = !isForceDarkWeb;
+    await _saveData();
+    reload();
+    notifyListeners();
+  }
+
+  void toggleJs() async {
+    isJsEnabled = !isJsEnabled;
+    await _saveData();
     await currentTab.controller?.setSettings(settings: getSettings());
-    currentTab.controller?.reload();
+    reload();
     notifyListeners();
   }
 
-  Future<void> viewSource(BuildContext context) async {
-    final html = await currentTab.controller?.getHtml();
-    if (html != null) {
-      Navigator.push(context, MaterialPageRoute(builder: (_) => SourceViewerPage(html: html)));
-    }
+  void setSearchEngine(String url) {
+    searchEngine = url;
+    _saveData();
+    notifyListeners();
   }
 
-  Future<void> shareScreenshot(BuildContext context) async {
-    try {
-      final image = await currentTab.controller?.takeScreenshot();
-      if (image == null) return;
-      final temp = await getTemporaryDirectory();
-      final file = File('${temp.path}/shot_${DateTime.now().millisecondsSinceEpoch}.png');
-      await file.writeAsBytes(image);
-      await Share.shareXFiles([XFile(file.path)]);
-    } catch (e) { /* ignore */ }
+  void clearData() async {
+    await currentTab.controller?.clearCache();
+    await CookieManager.instance().deleteAllCookies();
+    history.clear();
+    await _saveData();
+    notifyListeners();
   }
 
   void injectScripts(InAppWebViewController c) {
+    // AdBlock
     if (isAdBlockEnabled) {
       c.evaluateJavascript(source: """
         (function() {
@@ -242,13 +251,22 @@ class BrowserProvider extends ChangeNotifier {
         })();
       """);
     }
+    // Force Dark Mode
+    if (isForceDarkWeb) {
+       c.evaluateJavascript(source: """
+        (function() {
+          var style = document.createElement('style');
+          style.innerHTML = 'html { filter: invert(1) hue-rotate(180deg) !important; } img, video, iframe, canvas { filter: invert(1) hue-rotate(180deg) !important; }';
+          document.head.appendChild(style);
+        })();
+      """);
+    }
   }
 
+  // ... (Existing Utils: startVoice, addToHistory, viewSource, shareScreenshot)
   void startVoice(BuildContext context) async {
     if (await Permission.microphone.request().isGranted && await _speech.initialize()) {
-      _speech.listen(onResult: (r) {
-        if (r.finalResult) loadUrl(r.recognizedWords);
-      });
+      _speech.listen(onResult: (r) { if (r.finalResult) loadUrl(r.recognizedWords); });
     }
   }
 
@@ -262,22 +280,45 @@ class BrowserProvider extends ChangeNotifier {
     }
   }
 
+  Future<void> viewSource(BuildContext context) async {
+    final html = await currentTab.controller?.getHtml();
+    if (html != null) Navigator.push(context, MaterialPageRoute(builder: (_) => SourceViewerPage(html: html)));
+  }
+
+  Future<void> shareScreenshot(BuildContext context) async {
+    try {
+      final image = await currentTab.controller?.takeScreenshot();
+      if (image == null) return;
+      final temp = await getTemporaryDirectory();
+      final file = File('${temp.path}/shot_${DateTime.now().millisecondsSinceEpoch}.png');
+      await file.writeAsBytes(image);
+      await Share.shareXFiles([XFile(file.path)]);
+    } catch (e) { /* ignore */ }
+  }
+
+  void setCustomUA(String ua) async {
+    customUserAgent = ua;
+    await currentTab.controller?.setSettings(settings: getSettings());
+    currentTab.controller?.reload();
+    notifyListeners();
+  }
+
   void goBack() => currentTab.controller?.goBack();
   void goForward() => currentTab.controller?.goForward();
   void reload() => currentTab.controller?.reload();
 }
 
 class AiAgentProvider extends ChangeNotifier {
-  List<ChatMessage> messages = [ChatMessage(text: "Ready.", isUser: false)];
+  List<ChatMessage> messages = [ChatMessage(text: "System Ready.", isUser: false)];
   bool isThinking = false;
   void sendMessage(String text, BrowserProvider b) async {
     messages.add(ChatMessage(text: text, isUser: true));
     isThinking = true; notifyListeners();
-    await Future.delayed(const Duration(milliseconds: 600)); // Fast response
+    await Future.delayed(const Duration(milliseconds: 600));
     String resp = "OK.";
-    if (text.contains("desktop")) { b.toggleDesktopMode(); resp = "Desktop Mode Toggled."; }
-    else if (text.contains("source")) { resp = "Use the Tools menu to view source."; }
-    else { resp = "I can control settings or search for you."; }
+    if (text.contains("dark")) { b.toggleForceDark(); resp = "Dark Mode ${b.isForceDarkWeb ? "Enabled" : "Disabled"}"; }
+    else if (text.contains("js")) { b.toggleJs(); resp = "JavaScript ${b.isJsEnabled ? "Enabled" : "Disabled"}"; }
+    else { resp = "Command not recognized."; }
     messages.add(ChatMessage(text: resp, isUser: false));
     isThinking = false; notifyListeners();
   }
@@ -289,7 +330,7 @@ class ChatMessage {
   ChatMessage({required this.text, required this.isUser});
 }
 
-// --- PAGES & WIDGETS ---
+// --- UI ---
 
 class BrowserHomePage extends StatefulWidget {
   const BrowserHomePage({super.key});
@@ -313,7 +354,6 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
     final browser = Provider.of<BrowserProvider>(context);
     final devTools = Provider.of<DevToolsProvider>(context);
     
-    // Sync Animation with Provider State
     if (browser.isMenuOpen && _menuController.status != AnimationStatus.completed) {
       _menuController.forward();
     } else if (!browser.isMenuOpen && _menuController.status != AnimationStatus.dismissed) {
@@ -321,11 +361,10 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
     }
 
     return Scaffold(
-      resizeToAvoidBottomInset: false, // Prevent webview resize on keyboard
+      resizeToAvoidBottomInset: false,
       backgroundColor: Colors.black,
       body: Stack(
         children: [
-          // 1. WebView
           Column(
             children: [
               Expanded(
@@ -345,19 +384,15 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
                   onConsoleMessage: (c, msg) => devTools.addLog(msg.message, msg.messageLevel),
                 ),
               ),
-              // Space for Floating Bar (so web content isn't covered if scrolled to bottom)
               if (!browser.isZenMode) const SizedBox(height: 80), 
             ],
           ),
-
-          // 2. Loading Bar (Top)
           if (browser.progress < 1.0)
             Positioned(top: 0, left: 0, right: 0, child: LinearProgressIndicator(value: browser.progress, minHeight: 2, color: const Color(0xFF00FFC2), backgroundColor: Colors.transparent)),
-
-          // 3. Floating Menu (Separate Layer for Performance)
+          
+          // Menu Layer
           Positioned(
-            bottom: 90, // Just above the capsule
-            left: 20, right: 20,
+            bottom: 90, left: 20, right: 20,
             child: ScaleTransition(
               scale: _menuScale,
               alignment: Alignment.bottomCenter,
@@ -374,7 +409,7 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
             ),
           ),
 
-          // 4. Control Capsule (Always Visible, Static Position)
+          // Capsule
           AnimatedPositioned(
             duration: const Duration(milliseconds: 200),
             bottom: browser.isZenMode ? -100 : 20,
@@ -390,17 +425,14 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
                     child: GestureDetector(
                       onTap: () => _showSearch(context, browser),
                       child: Container(
-                        height: 40,
-                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        height: 40, padding: const EdgeInsets.symmetric(horizontal: 16),
                         decoration: BoxDecoration(color: Colors.white.withOpacity(0.08), borderRadius: BorderRadius.circular(20)),
                         alignment: Alignment.centerLeft,
-                        child: Row(
-                          children: [
-                            Icon(browser.isSecure ? Iconsax.lock5 : Iconsax.unlock, size: 12, color: browser.isSecure ? Colors.green : Colors.red),
-                            const SizedBox(width: 8),
-                            Expanded(child: Text(browser.currentTab.url.replaceFirst("https://", ""), style: const TextStyle(color: Colors.white70, fontSize: 13), overflow: TextOverflow.ellipsis)),
-                          ],
-                        ),
+                        child: Row(children: [
+                           Icon(browser.isSecure ? Iconsax.lock5 : Iconsax.unlock, size: 12, color: browser.isSecure ? Colors.green : Colors.red),
+                           const SizedBox(width: 8),
+                           Expanded(child: Text(browser.currentTab.url.replaceFirst("https://", ""), style: const TextStyle(color: Colors.white70, fontSize: 13), overflow: TextOverflow.ellipsis)),
+                        ]),
                       ),
                     ),
                   ),
@@ -411,7 +443,6 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
             ),
           ),
           
-          // 5. Zen Mode Trigger
           if (browser.isZenMode)
             Positioned(bottom: 20, right: 20, child: FloatingActionButton.small(backgroundColor: Colors.white10, child: const Icon(Icons.expand_less, color: Colors.white), onPressed: browser.toggleZenMode)),
         ],
@@ -420,23 +451,13 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
   }
 
   Widget _circleBtn(IconData icon, VoidCallback onTap, {Color color = Colors.white}) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(50),
-      child: Container(
-        width: 44, height: 44,
-        alignment: Alignment.center,
-        decoration: const BoxDecoration(shape: BoxShape.circle),
-        child: Icon(icon, color: color, size: 22),
-      ),
-    );
+    return InkWell(onTap: onTap, borderRadius: BorderRadius.circular(50), child: Container(width: 44, height: 44, alignment: Alignment.center, decoration: const BoxDecoration(shape: BoxShape.circle), child: Icon(icon, color: color, size: 22)));
   }
 
   Widget _buildGridMenu(BuildContext context, BrowserProvider b) {
     return GridView.count(
       shrinkWrap: true, crossAxisCount: 5, mainAxisSpacing: 15, crossAxisSpacing: 10,
-      physics: const NeverScrollableScrollPhysics(),
-      padding: const EdgeInsets.all(16),
+      physics: const NeverScrollableScrollPhysics(), padding: const EdgeInsets.all(16),
       children: [
         _menuItem(Iconsax.arrow_left_2, "Back", b.goBack),
         _menuItem(Iconsax.arrow_right_3, "Fwd", b.goForward),
@@ -446,8 +467,8 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
         _menuItem(Iconsax.monitor, "Desktop", b.toggleDesktopMode, isActive: b.isDesktopMode),
         _menuItem(Iconsax.code, "Source", () { b.toggleMenu(); b.viewSource(context); }),
         _menuItem(Iconsax.command, "Console", () { b.toggleMenu(); _showDevConsole(context); }),
-        _menuItem(Iconsax.mobile, "UA", () { b.toggleMenu(); _showUAPicker(context, b); }),
-        _menuItem(Iconsax.setting, "Settings", () { }),
+        // FIX: Settings button now points to _showSettingsModal
+        _menuItem(Iconsax.setting, "Settings", () { b.toggleMenu(); _showSettingsModal(context, b); }),
       ],
     );
   }
@@ -455,115 +476,89 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
   Widget _menuItem(IconData icon, String label, VoidCallback onTap, {bool isActive = false}) {
     return GestureDetector(
       onTap: onTap,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(color: isActive ? const Color(0xFF00FFC2) : Colors.white10, shape: BoxShape.circle),
-            child: Icon(icon, size: 18, color: isActive ? Colors.black : Colors.white),
-          ),
-          const SizedBox(height: 5),
-          Text(label, style: const TextStyle(fontSize: 10, color: Colors.white70), maxLines: 1),
-        ],
-      ),
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: isActive ? const Color(0xFF00FFC2) : Colors.white10, shape: BoxShape.circle), child: Icon(icon, size: 18, color: isActive ? Colors.black : Colors.white)),
+        const SizedBox(height: 5),
+        Text(label, style: const TextStyle(fontSize: 10, color: Colors.white70), maxLines: 1),
+      ]),
     );
   }
 
   Widget _buildTabStrip(BrowserProvider b) {
-    return Container(
-      height: 40, margin: const EdgeInsets.only(bottom: 10),
-      child: ListView.builder(
-        scrollDirection: Axis.horizontal, itemCount: b.tabs.length, padding: const EdgeInsets.symmetric(horizontal: 10),
-        itemBuilder: (ctx, i) => GestureDetector(
-          onTap: () => b.switchTab(i),
-          child: Container(
-            margin: const EdgeInsets.only(right: 8), padding: const EdgeInsets.symmetric(horizontal: 12),
-            alignment: Alignment.center,
-            decoration: BoxDecoration(color: i == b.currentTabIndex ? const Color(0xFF00FFC2).withOpacity(0.2) : Colors.white10, borderRadius: BorderRadius.circular(10), border: i == b.currentTabIndex ? Border.all(color: const Color(0xFF00FFC2), width: 0.5) : null),
-            child: Row(children: [
-              Text(b.tabs[i].title, style: TextStyle(fontSize: 10, color: i == b.currentTabIndex ? Colors.white : Colors.white54), maxLines: 1),
-              const SizedBox(width: 4),
-              GestureDetector(onTap: () => b.closeTab(i), child: const Icon(Icons.close, size: 10, color: Colors.white30))
-            ]),
-          ),
-        ),
+    return Container(height: 40, margin: const EdgeInsets.only(bottom: 10), child: ListView.builder(
+      scrollDirection: Axis.horizontal, itemCount: b.tabs.length, padding: const EdgeInsets.symmetric(horizontal: 10),
+      itemBuilder: (ctx, i) => GestureDetector(
+        onTap: () => b.switchTab(i),
+        child: Container(margin: const EdgeInsets.only(right: 8), padding: const EdgeInsets.symmetric(horizontal: 12), alignment: Alignment.center, decoration: BoxDecoration(color: i == b.currentTabIndex ? const Color(0xFF00FFC2).withOpacity(0.2) : Colors.white10, borderRadius: BorderRadius.circular(10), border: i == b.currentTabIndex ? Border.all(color: const Color(0xFF00FFC2), width: 0.5) : null), child: Row(children: [
+          Text(b.tabs[i].title, style: TextStyle(fontSize: 10, color: i == b.currentTabIndex ? Colors.white : Colors.white54), maxLines: 1),
+          const SizedBox(width: 4), GestureDetector(onTap: () => b.closeTab(i), child: const Icon(Icons.close, size: 10, color: Colors.white30))
+        ])),
       ),
-    );
+    ));
   }
 
+  // --- MODALS ---
+
+  void _showSettingsModal(BuildContext context, BrowserProvider b) {
+    showModalBottomSheet(context: context, backgroundColor: const Color(0xFF101010), isScrollControlled: true, builder: (_) => StatefulBuilder(builder: (ctx, setState) {
+      return Container(height: MediaQuery.of(context).size.height * 0.6, padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text("Advanced Settings", style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 20),
+        Expanded(child: ListView(children: [
+          _sectionHeader("Display"),
+          SwitchListTile(title: const Text("Force Dark Web", style: TextStyle(color: Colors.white)), subtitle: const Text("Invert web colors", style: TextStyle(color: Colors.grey, fontSize: 12)), value: b.isForceDarkWeb, onChanged: (v) { b.toggleForceDark(); setState((){}); }),
+          SwitchListTile(title: const Text("Desktop Mode", style: TextStyle(color: Colors.white)), value: b.isDesktopMode, onChanged: (v) { b.toggleDesktopMode(); setState((){}); }),
+          
+          _sectionHeader("Security (Advanced)"),
+          SwitchListTile(title: const Text("AdBlocker", style: TextStyle(color: Colors.white)), value: b.isAdBlockEnabled, onChanged: (v) { b.toggleAdBlock(); setState((){}); }),
+          SwitchListTile(title: const Text("Enable JavaScript", style: TextStyle(color: Colors.white)), subtitle: const Text("Disable for extreme privacy", style: TextStyle(color: Colors.grey, fontSize: 12)), value: b.isJsEnabled, onChanged: (v) { b.toggleJs(); setState((){}); }),
+          
+          _sectionHeader("General"),
+          ListTile(title: const Text("Search Engine", style: TextStyle(color: Colors.white)), subtitle: Text(b.searchEngine.contains("google") ? "Google" : "DuckDuckGo", style: const TextStyle(color: Colors.grey)), onTap: () {
+            b.setSearchEngine(b.searchEngine.contains("google") ? "https://duckduckgo.com/?q=" : "https://www.google.com/search?q=");
+            setState((){});
+          }),
+          ListTile(title: const Text("Clear All Data", style: TextStyle(color: Colors.red)), leading: const Icon(Icons.delete, color: Colors.red), onTap: () { b.clearData(); Navigator.pop(context); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Data Wiped"))); }),
+        ])),
+      ]));
+    }));
+  }
+
+  Widget _sectionHeader(String title) => Padding(padding: const EdgeInsets.only(top: 16, bottom: 8), child: Text(title, style: const TextStyle(color: Color(0xFF00FFC2), fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2)));
+
+  // ... (Other Modals: _showSearch, _showAI, _showDevConsole - Same as before)
   void _showSearch(BuildContext context, BrowserProvider b) {
     showModalBottomSheet(context: context, isScrollControlled: true, backgroundColor: Colors.transparent, builder: (_) => SearchSheet(browser: b));
   }
-
   void _showAI(BuildContext context) {
     showModalBottomSheet(context: context, backgroundColor: Colors.transparent, builder: (_) => const AiSheet());
   }
-
   void _showDevConsole(BuildContext context) {
     showModalBottomSheet(context: context, backgroundColor: const Color(0xFF101010), builder: (_) => const DevConsoleSheet());
   }
-
-  void _showUAPicker(BuildContext context, BrowserProvider b) {
-    showDialog(context: context, builder: (_) => AlertDialog(
-      backgroundColor: const Color(0xFF222222),
-      title: const Text("Custom User Agent", style: TextStyle(color: Colors.white)),
-      content: Column(mainAxisSize: MainAxisSize.min, children: [
-        ListTile(title: const Text("iPhone 14", style: TextStyle(color: Colors.white)), onTap: () { b.setCustomUA("Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"); Navigator.pop(context); }),
-        ListTile(title: const Text("Windows Chrome", style: TextStyle(color: Colors.white)), onTap: () { b.setCustomUA("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"); Navigator.pop(context); }),
-        ListTile(title: const Text("Google Bot", style: TextStyle(color: Colors.white)), onTap: () { b.setCustomUA("Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"); Navigator.pop(context); }),
-      ]),
-    ));
-  }
 }
 
+// ... (Classes: GlassBox, SearchSheet, AiSheet, DevConsoleSheet, SourceViewerPage - Same as before)
 class GlassBox extends StatelessWidget {
   final Widget child;
   final double borderRadius;
   final EdgeInsets padding;
   const GlassBox({super.key, required this.child, this.borderRadius = 20, this.padding = const EdgeInsets.all(0)});
-
   @override
   Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(borderRadius),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
-        child: Container(
-          padding: padding,
-          decoration: BoxDecoration(color: const Color(0xFF1E1E1E).withOpacity(0.85), borderRadius: BorderRadius.circular(borderRadius), border: Border.all(color: Colors.white.withOpacity(0.1))),
-          child: child,
-        ),
-      ),
-    );
+    return ClipRRect(borderRadius: BorderRadius.circular(borderRadius), child: BackdropFilter(filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15), child: Container(padding: padding, decoration: BoxDecoration(color: const Color(0xFF1E1E1E).withOpacity(0.85), borderRadius: BorderRadius.circular(borderRadius), border: Border.all(color: Colors.white.withOpacity(0.1))), child: child)));
   }
 }
-
 class SearchSheet extends StatelessWidget {
   final BrowserProvider browser;
   const SearchSheet({super.key, required this.browser});
   @override
   Widget build(BuildContext context) {
-    return Container(
-      height: MediaQuery.of(context).size.height * 0.9,
-      padding: const EdgeInsets.all(20),
-      decoration: const BoxDecoration(color: Color(0xFF101010), borderRadius: BorderRadius.vertical(top: Radius.circular(30))),
-      child: Column(children: [
-        TextField(
-          controller: browser.urlController, autofocus: true, style: const TextStyle(fontSize: 16, color: Colors.white),
-          decoration: InputDecoration(
-            hintText: "Search or enter URL", filled: true, fillColor: Colors.white10,
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(15), borderSide: BorderSide.none),
-            prefixIcon: const Icon(Icons.search, color: Colors.white54),
-            suffixIcon: IconButton(icon: const Icon(Icons.mic, color: Color(0xFF00FFC2)), onPressed: () { browser.startVoice(context); Navigator.pop(context); }),
-          ),
-          onSubmitted: (v) { browser.loadUrl(v); Navigator.pop(context); },
-        ),
-      ]),
-    );
+    return Container(height: MediaQuery.of(context).size.height * 0.9, padding: const EdgeInsets.all(20), decoration: const BoxDecoration(color: Color(0xFF101010), borderRadius: BorderRadius.vertical(top: Radius.circular(30))), child: Column(children: [
+      TextField(controller: browser.urlController, autofocus: true, style: const TextStyle(fontSize: 16, color: Colors.white), decoration: InputDecoration(hintText: "Search or enter URL", filled: true, fillColor: Colors.white10, border: OutlineInputBorder(borderRadius: BorderRadius.circular(15), borderSide: BorderSide.none), prefixIcon: const Icon(Icons.search, color: Colors.white54), suffixIcon: IconButton(icon: const Icon(Icons.mic, color: Color(0xFF00FFC2)), onPressed: () { browser.startVoice(context); Navigator.pop(context); })), onSubmitted: (v) { browser.loadUrl(v); Navigator.pop(context); }),
+    ]));
   }
 }
-
 class AiSheet extends StatelessWidget {
   const AiSheet({super.key});
   @override
@@ -571,58 +566,31 @@ class AiSheet extends StatelessWidget {
     final ai = Provider.of<AiAgentProvider>(context);
     final browser = Provider.of<BrowserProvider>(context, listen: false);
     final ctrl = TextEditingController();
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: const BoxDecoration(color: Color(0xFF101010), borderRadius: BorderRadius.vertical(top: Radius.circular(30))),
-      child: Column(mainAxisSize: MainAxisSize.min, children: [
-        const Icon(Iconsax.magic_star, color: Color(0xFF00FFC2), size: 40),
-        const SizedBox(height: 10),
-        SizedBox(
-          height: 200,
-          child: ListView.builder(itemCount: ai.messages.length, itemBuilder: (c, i) => Text(ai.messages[i].text, style: TextStyle(color: ai.messages[i].isUser ? const Color(0xFF00FFC2) : Colors.white))),
-        ),
-        TextField(
-          controller: ctrl, style: const TextStyle(color: Colors.white),
-          decoration: InputDecoration(hintText: "Ask AI...", filled: true, fillColor: Colors.white10, border: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: BorderSide.none)),
-          onSubmitted: (v) { ai.sendMessage(v, browser); ctrl.clear(); },
-        )
-      ]),
-    );
+    return Container(padding: const EdgeInsets.all(20), decoration: const BoxDecoration(color: Color(0xFF101010), borderRadius: BorderRadius.vertical(top: Radius.circular(30))), child: Column(mainAxisSize: MainAxisSize.min, children: [
+      const Icon(Iconsax.magic_star, color: Color(0xFF00FFC2), size: 40),
+      const SizedBox(height: 10),
+      SizedBox(height: 200, child: ListView.builder(itemCount: ai.messages.length, itemBuilder: (c, i) => Text(ai.messages[i].text, style: TextStyle(color: ai.messages[i].isUser ? const Color(0xFF00FFC2) : Colors.white)))),
+      TextField(controller: ctrl, style: const TextStyle(color: Colors.white), decoration: InputDecoration(hintText: "Ask AI...", filled: true, fillColor: Colors.white10, border: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: BorderSide.none)), onSubmitted: (v) { ai.sendMessage(v, browser); ctrl.clear(); })
+    ]));
   }
 }
-
 class DevConsoleSheet extends StatelessWidget {
   const DevConsoleSheet({super.key});
   @override
   Widget build(BuildContext context) {
     final logs = Provider.of<DevToolsProvider>(context).consoleLogs;
-    return Container(
-      height: 400, padding: const EdgeInsets.all(16),
-      decoration: const BoxDecoration(color: Color(0xFF0D0D0D)),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-          const Text("DevTools Console", style: TextStyle(color: Color(0xFF00FFC2), fontWeight: FontWeight.bold)),
-          IconButton(icon: const Icon(Icons.delete, color: Colors.red), onPressed: () => Provider.of<DevToolsProvider>(context, listen: false).clearLogs()),
-        ]),
-        const Divider(color: Colors.white24),
-        Expanded(child: ListView.builder(
-          itemCount: logs.length,
-          itemBuilder: (ctx, i) => Padding(padding: const EdgeInsets.symmetric(vertical: 2), child: Text(logs[i], style: const TextStyle(color: Colors.greenAccent, fontFamily: 'monospace', fontSize: 10))),
-        )),
-      ]),
-    );
+    return Container(height: 400, padding: const EdgeInsets.all(16), decoration: const BoxDecoration(color: Color(0xFF0D0D0D)), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text("DevTools Console", style: TextStyle(color: Color(0xFF00FFC2), fontWeight: FontWeight.bold)), IconButton(icon: const Icon(Icons.delete, color: Colors.red), onPressed: () => Provider.of<DevToolsProvider>(context, listen: false).clearLogs())]),
+      const Divider(color: Colors.white24),
+      Expanded(child: ListView.builder(itemCount: logs.length, itemBuilder: (ctx, i) => Padding(padding: const EdgeInsets.symmetric(vertical: 2), child: Text(logs[i], style: const TextStyle(color: Colors.greenAccent, fontFamily: 'monospace', fontSize: 10))))),
+    ]));
   }
 }
-
 class SourceViewerPage extends StatelessWidget {
   final String html;
   const SourceViewerPage({super.key, required this.html});
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF0D0D0D),
-      appBar: AppBar(backgroundColor: Colors.transparent, title: const Text("Source Code", style: TextStyle(fontSize: 14))),
-      body: SingleChildScrollView(padding: const EdgeInsets.all(16), child: SelectableText(html, style: const TextStyle(color: Colors.white70, fontFamily: 'monospace', fontSize: 10))),
-    );
+    return Scaffold(backgroundColor: const Color(0xFF0D0D0D), appBar: AppBar(backgroundColor: Colors.transparent, title: const Text("Source Code", style: TextStyle(fontSize: 14))), body: SingleChildScrollView(padding: const EdgeInsets.all(16), child: SelectableText(html, style: const TextStyle(color: Colors.white70, fontFamily: 'monospace', fontSize: 10))));
   }
 }
