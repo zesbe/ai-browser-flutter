@@ -59,7 +59,8 @@ class BrowserTab {
   String title;
   bool isIncognito;
   InAppWebViewController? controller;
-  BrowserTab({required this.id, this.url = "https://www.google.com", this.title = "New Tab", this.isIncognito = false});
+  // Start with 'home' to show Speed Dial
+  BrowserTab({required this.id, this.url = "neon://home", this.title = "Start Page", this.isIncognito = false});
 }
 
 class HistoryItem {
@@ -85,20 +86,24 @@ class BrowserProvider extends ChangeNotifier {
   int currentTabIndex = 0;
   List<HistoryItem> history = [];
   
-  // Persistent Settings
+  // Settings
   String searchEngine = "https://www.google.com/search?q=";
   String customUserAgent = "";
   bool isDesktopMode = false;
   bool isAdBlockEnabled = true;
-  bool isForceDarkWeb = false; // Advanced
-  bool isJsEnabled = true;     // Advanced
+  bool isForceDarkWeb = false;
+  bool isJsEnabled = true;
   bool isZenMode = false;
   
   // State
   double progress = 0;
   bool isSecure = true;
   bool isMenuOpen = false;
+  bool showFindBar = false; // Find in Page
+  SslCertificate? sslCertificate; // SSL Info
+  
   TextEditingController urlController = TextEditingController();
+  TextEditingController findController = TextEditingController(); // Ctrl+F
   stt.SpeechToText _speech = stt.SpeechToText();
 
   BrowserProvider() {
@@ -113,7 +118,7 @@ class BrowserProvider extends ChangeNotifier {
       isInspectable: true,
       mediaPlaybackRequiresUserGesture: false,
       allowsInlineMediaPlayback: true,
-      javaScriptEnabled: isJsEnabled, // Advanced Control
+      javaScriptEnabled: isJsEnabled,
       cacheEnabled: !currentTab.isIncognito,
       domStorageEnabled: !currentTab.isIncognito,
       useWideViewPort: true,
@@ -131,7 +136,6 @@ class BrowserProvider extends ChangeNotifier {
     isAdBlockEnabled = prefs.getBool('adBlock') ?? true;
     isForceDarkWeb = prefs.getBool('forceDark') ?? false;
     isJsEnabled = prefs.getBool('jsEnabled') ?? true;
-    
     final h = prefs.getStringList('history') ?? [];
     history = h.map((e) => HistoryItem.fromJson(jsonDecode(e))).toList();
     notifyListeners();
@@ -146,7 +150,7 @@ class BrowserProvider extends ChangeNotifier {
     prefs.setStringList('history', history.map((e) => jsonEncode(e.toJson())).toList());
   }
 
-  void _addNewTab([String url = "https://www.google.com", bool incognito = false]) {
+  void _addNewTab([String url = "neon://home", bool incognito = false]) {
     final newTab = BrowserTab(id: const Uuid().v4(), url: url, isIncognito: incognito);
     tabs.add(newTab);
     currentTabIndex = tabs.length - 1;
@@ -170,21 +174,27 @@ class BrowserProvider extends ChangeNotifier {
   }
 
   void _updateState() {
-    urlController.text = currentTab.url;
+    urlController.text = currentTab.url == "neon://home" ? "" : currentTab.url;
     isSecure = currentTab.url.startsWith("https://");
     progress = 0;
+    showFindBar = false;
+    sslCertificate = null;
   }
 
   void setController(InAppWebViewController c) => currentTab.controller = c;
 
   void updateUrl(String url) {
     currentTab.url = url;
-    urlController.text = url;
+    urlController.text = url == "neon://home" ? "" : url;
     isSecure = url.startsWith("https://");
     notifyListeners();
   }
 
   void loadUrl(String url) {
+    if (url == "home" || url == "neon://home") {
+      updateUrl("neon://home");
+      return;
+    }
     if (!url.startsWith("http")) {
       url = (url.contains(".") && !url.contains(" ")) ? "https://$url" : "$searchEngine$url";
     }
@@ -195,7 +205,39 @@ class BrowserProvider extends ChangeNotifier {
   void toggleMenu() { isMenuOpen = !isMenuOpen; notifyListeners(); }
   void toggleZenMode() { isZenMode = !isZenMode; notifyListeners(); }
 
-  // --- ADVANCED SETTINGS ACTIONS ---
+  // --- FEATURES ---
+
+  void findInPage(String text) {
+    if (text.isEmpty) {
+      currentTab.controller?.clearMatches();
+    } else {
+      currentTab.controller?.findAllAsync(find: text);
+    }
+  }
+
+  void findNext() => currentTab.controller?.findNext(forward: true);
+  void findPrev() => currentTab.controller?.findNext(forward: false);
+  
+  void toggleFindBar() {
+    showFindBar = !showFindBar;
+    if (!showFindBar) currentTab.controller?.clearMatches();
+    notifyListeners();
+  }
+
+  void toggleReaderMode() {
+    // Basic Reader Mode using Readability logic injection
+    String js = """
+      (function() {
+        var p = document.getElementsByTagName('p');
+        var txt = '';
+        for(var i=0; i<p.length; i++) txt += '<p>' + p[i].innerHTML + '</p>';
+        document.body.innerHTML = '<div style="max-width:800px; margin:0 auto; padding:20px; font-family:sans-serif; line-height:1.6; color:#e0e0e0; background:#121212;">' + txt + '</div>';
+        document.body.style.backgroundColor = '#121212';
+      })();
+    """;
+    currentTab.controller?.evaluateJavascript(source: js);
+    toggleMenu();
+  }
 
   void toggleDesktopMode() async {
     isDesktopMode = !isDesktopMode;
@@ -241,7 +283,6 @@ class BrowserProvider extends ChangeNotifier {
   }
 
   void injectScripts(InAppWebViewController c) {
-    // AdBlock
     if (isAdBlockEnabled) {
       c.evaluateJavascript(source: """
         (function() {
@@ -251,7 +292,6 @@ class BrowserProvider extends ChangeNotifier {
         })();
       """);
     }
-    // Force Dark Mode
     if (isForceDarkWeb) {
        c.evaluateJavascript(source: """
         (function() {
@@ -263,7 +303,6 @@ class BrowserProvider extends ChangeNotifier {
     }
   }
 
-  // ... (Existing Utils: startVoice, addToHistory, viewSource, shareScreenshot)
   void startVoice(BuildContext context) async {
     if (await Permission.microphone.request().isGranted && await _speech.initialize()) {
       _speech.listen(onResult: (r) { if (r.finalResult) loadUrl(r.recognizedWords); });
@@ -271,7 +310,7 @@ class BrowserProvider extends ChangeNotifier {
   }
 
   void addToHistory(String url, String? title) {
-    if (!currentTab.isIncognito && url != "about:blank" && url.isNotEmpty) {
+    if (!currentTab.isIncognito && url != "neon://home" && url != "about:blank" && url.isNotEmpty) {
       if (history.isEmpty || history.first.url != url) {
         history.insert(0, HistoryItem(url: url, title: title ?? "Unknown"));
         if (history.length > 50) history.removeLast();
@@ -303,6 +342,11 @@ class BrowserProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  void updateSSL(SslCertificate? ssl) {
+    sslCertificate = ssl;
+    notifyListeners();
+  }
+
   void goBack() => currentTab.controller?.goBack();
   void goForward() => currentTab.controller?.goForward();
   void reload() => currentTab.controller?.reload();
@@ -316,9 +360,9 @@ class AiAgentProvider extends ChangeNotifier {
     isThinking = true; notifyListeners();
     await Future.delayed(const Duration(milliseconds: 600));
     String resp = "OK.";
-    if (text.contains("dark")) { b.toggleForceDark(); resp = "Dark Mode ${b.isForceDarkWeb ? "Enabled" : "Disabled"}"; }
-    else if (text.contains("js")) { b.toggleJs(); resp = "JavaScript ${b.isJsEnabled ? "Enabled" : "Disabled"}"; }
-    else { resp = "Command not recognized."; }
+    if (text.contains("home")) { b.loadUrl("neon://home"); resp = "Going Home."; }
+    else if (text.contains("dark")) { b.toggleForceDark(); resp = "Dark Mode Toggled."; }
+    else { resp = "I can navigate or change settings."; }
     messages.add(ChatMessage(text: resp, isUser: false));
     isThinking = false; notifyListeners();
   }
@@ -341,12 +385,22 @@ class BrowserHomePage extends StatefulWidget {
 class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderStateMixin {
   late AnimationController _menuController;
   late Animation<double> _menuScale;
+  late PullToRefreshController _pullToRefreshController;
 
   @override
   void initState() {
     super.initState();
     _menuController = AnimationController(vsync: this, duration: const Duration(milliseconds: 150));
     _menuScale = CurvedAnimation(parent: _menuController, curve: Curves.easeOutBack);
+    
+    _pullToRefreshController = PullToRefreshController(
+      settings: PullToRefreshSettings(color: const Color(0xFF00FFC2), backgroundColor: Colors.black),
+      onRefresh: () async {
+        final b = Provider.of<BrowserProvider>(context, listen: false);
+        if (b.currentTab.url != "neon://home") b.reload();
+        _pullToRefreshController.endRefreshing();
+      },
+    );
   }
 
   @override
@@ -360,6 +414,9 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
       _menuController.reverse();
     }
 
+    // Determine content: WebView or StartPage
+    final bool isStartPage = browser.currentTab.url == "neon://home";
+
     return Scaffold(
       resizeToAvoidBottomInset: false,
       backgroundColor: Colors.black,
@@ -368,10 +425,13 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
           Column(
             children: [
               Expanded(
-                child: InAppWebView(
+                child: isStartPage 
+                ? StartPage(browser: browser) 
+                : InAppWebView(
                   key: ValueKey(browser.currentTab.id),
                   initialUrlRequest: URLRequest(url: WebUri(browser.currentTab.url)),
                   initialSettings: browser.getSettings(),
+                  pullToRefreshController: _pullToRefreshController,
                   onWebViewCreated: (c) => browser.setController(c),
                   onLoadStart: (c, url) => browser.updateUrl(url.toString()),
                   onLoadStop: (c, url) async {
@@ -379,15 +439,19 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
                     browser.updateUrl(url.toString());
                     browser.injectScripts(c);
                     browser.addToHistory(url.toString(), await c.getTitle());
+                    browser.updateSSL(await c.getCertificate());
                   },
                   onProgressChanged: (c, p) => browser.progress = p / 100,
                   onConsoleMessage: (c, msg) => devTools.addLog(msg.message, msg.messageLevel),
+                  onReceivedServerTrustAuthRequest: (c, challenge) async {
+                    return ServerTrustAuthResponse(action: ServerTrustAuthResponseAction.PROCEED);
+                  },
                 ),
               ),
               if (!browser.isZenMode) const SizedBox(height: 80), 
             ],
           ),
-          if (browser.progress < 1.0)
+          if (browser.progress < 1.0 && !isStartPage)
             Positioned(top: 0, left: 0, right: 0, child: LinearProgressIndicator(value: browser.progress, minHeight: 2, color: const Color(0xFF00FFC2), backgroundColor: Colors.transparent)),
           
           // Menu Layer
@@ -409,6 +473,18 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
             ),
           ),
 
+          // Find Bar (Ctrl+F) Overlay
+          if (browser.showFindBar)
+             Positioned(
+               bottom: browser.isZenMode ? 20 : 140, left: 20, right: 20,
+               child: GlassBox(padding: const EdgeInsets.symmetric(horizontal: 10), child: Row(children: [
+                 Expanded(child: TextField(controller: browser.findController, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(hintText: "Find...", border: InputBorder.none, hintStyle: TextStyle(color: Colors.white30)), onChanged: (v) => browser.findInPage(v))),
+                 IconButton(icon: const Icon(Icons.keyboard_arrow_up, color: Colors.white), onPressed: browser.findPrev),
+                 IconButton(icon: const Icon(Icons.keyboard_arrow_down, color: Colors.white), onPressed: browser.findNext),
+                 IconButton(icon: const Icon(Icons.close, color: Colors.red), onPressed: browser.toggleFindBar),
+               ])),
+             ),
+
           // Capsule
           AnimatedPositioned(
             duration: const Duration(milliseconds: 200),
@@ -429,9 +505,12 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
                         decoration: BoxDecoration(color: Colors.white.withOpacity(0.08), borderRadius: BorderRadius.circular(20)),
                         alignment: Alignment.centerLeft,
                         child: Row(children: [
-                           Icon(browser.isSecure ? Iconsax.lock5 : Iconsax.unlock, size: 12, color: browser.isSecure ? Colors.green : Colors.red),
+                           GestureDetector(
+                             onTap: () => _showSSLCertificate(context, browser),
+                             child: Icon(browser.isSecure ? Iconsax.lock5 : Iconsax.unlock, size: 12, color: browser.isSecure ? Colors.green : Colors.red)
+                           ),
                            const SizedBox(width: 8),
-                           Expanded(child: Text(browser.currentTab.url.replaceFirst("https://", ""), style: const TextStyle(color: Colors.white70, fontSize: 13), overflow: TextOverflow.ellipsis)),
+                           Expanded(child: Text(isStartPage ? "Search or type URL" : browser.currentTab.url.replaceFirst("https://", ""), style: const TextStyle(color: Colors.white70, fontSize: 13), overflow: TextOverflow.ellipsis)),
                         ]),
                       ),
                     ),
@@ -463,12 +542,12 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
         _menuItem(Iconsax.arrow_right_3, "Fwd", b.goForward),
         _menuItem(Iconsax.refresh, "Reload", b.reload),
         _menuItem(Iconsax.add, "New", () { b._addNewTab(); b.toggleMenu(); }),
-        _menuItem(Iconsax.mask, "Private", () { b._addNewTab("https://google.com", true); b.toggleMenu(); }),
+        _menuItem(Iconsax.search_status, "Find", () { b.toggleMenu(); b.toggleFindBar(); }),
         _menuItem(Iconsax.monitor, "Desktop", b.toggleDesktopMode, isActive: b.isDesktopMode),
-        _menuItem(Iconsax.code, "Source", () { b.toggleMenu(); b.viewSource(context); }),
+        _menuItem(Iconsax.book_1, "Reader", () { b.toggleReaderMode(); }),
         _menuItem(Iconsax.command, "Console", () { b.toggleMenu(); _showDevConsole(context); }),
-        // FIX: Settings button now points to _showSettingsModal
         _menuItem(Iconsax.setting, "Settings", () { b.toggleMenu(); _showSettingsModal(context, b); }),
+        _menuItem(Iconsax.home, "Home", () { b.loadUrl("neon://home"); b.toggleMenu(); }),
       ],
     );
   }
@@ -497,7 +576,26 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
     ));
   }
 
-  // --- MODALS ---
+  void _showSSLCertificate(BuildContext context, BrowserProvider b) {
+    if (b.currentTab.url == "neon://home") return;
+    showDialog(context: context, builder: (_) => AlertDialog(
+      backgroundColor: const Color(0xFF1E1E1E),
+      title: Row(children: [Icon(b.isSecure ? Iconsax.lock5 : Iconsax.unlock, color: b.isSecure ? Colors.green : Colors.red), const SizedBox(width: 10), const Text("Security Info", style: TextStyle(color: Colors.white))]),
+      content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text("Connection is ${b.isSecure ? "Secure" : "Not Secure"}", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 10),
+        Text("Host: ${Uri.parse(b.currentTab.url).host}", style: const TextStyle(color: Colors.white70)),
+        if (b.sslCertificate != null) ...[
+          const SizedBox(height: 10),
+          const Text("Issued To:", style: TextStyle(color: Colors.grey)),
+          Text(b.sslCertificate!.issuedTo.CN ?? "Unknown", style: const TextStyle(color: Colors.white)),
+          const Text("Issued By:", style: TextStyle(color: Colors.grey)),
+          Text(b.sslCertificate!.issuedBy.CN ?? "Unknown", style: const TextStyle(color: Colors.white)),
+        ]
+      ]),
+      actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("Close"))],
+    ));
+  }
 
   void _showSettingsModal(BuildContext context, BrowserProvider b) {
     showModalBottomSheet(context: context, backgroundColor: const Color(0xFF101010), isScrollControlled: true, builder: (_) => StatefulBuilder(builder: (ctx, setState) {
@@ -506,18 +604,12 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
         const SizedBox(height: 20),
         Expanded(child: ListView(children: [
           _sectionHeader("Display"),
-          SwitchListTile(title: const Text("Force Dark Web", style: TextStyle(color: Colors.white)), subtitle: const Text("Invert web colors", style: TextStyle(color: Colors.grey, fontSize: 12)), value: b.isForceDarkWeb, onChanged: (v) { b.toggleForceDark(); setState((){}); }),
+          SwitchListTile(title: const Text("Force Dark Web", style: TextStyle(color: Colors.white)), value: b.isForceDarkWeb, onChanged: (v) { b.toggleForceDark(); setState((){}); }),
           SwitchListTile(title: const Text("Desktop Mode", style: TextStyle(color: Colors.white)), value: b.isDesktopMode, onChanged: (v) { b.toggleDesktopMode(); setState((){}); }),
-          
-          _sectionHeader("Security (Advanced)"),
+          _sectionHeader("Security"),
           SwitchListTile(title: const Text("AdBlocker", style: TextStyle(color: Colors.white)), value: b.isAdBlockEnabled, onChanged: (v) { b.toggleAdBlock(); setState((){}); }),
-          SwitchListTile(title: const Text("Enable JavaScript", style: TextStyle(color: Colors.white)), subtitle: const Text("Disable for extreme privacy", style: TextStyle(color: Colors.grey, fontSize: 12)), value: b.isJsEnabled, onChanged: (v) { b.toggleJs(); setState((){}); }),
-          
-          _sectionHeader("General"),
-          ListTile(title: const Text("Search Engine", style: TextStyle(color: Colors.white)), subtitle: Text(b.searchEngine.contains("google") ? "Google" : "DuckDuckGo", style: const TextStyle(color: Colors.grey)), onTap: () {
-            b.setSearchEngine(b.searchEngine.contains("google") ? "https://duckduckgo.com/?q=" : "https://www.google.com/search?q=");
-            setState((){});
-          }),
+          SwitchListTile(title: const Text("JavaScript", style: TextStyle(color: Colors.white)), value: b.isJsEnabled, onChanged: (v) { b.toggleJs(); setState((){}); }),
+          _sectionHeader("Data"),
           ListTile(title: const Text("Clear All Data", style: TextStyle(color: Colors.red)), leading: const Icon(Icons.delete, color: Colors.red), onTap: () { b.clearData(); Navigator.pop(context); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Data Wiped"))); }),
         ])),
       ]));
@@ -526,7 +618,6 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
 
   Widget _sectionHeader(String title) => Padding(padding: const EdgeInsets.only(top: 16, bottom: 8), child: Text(title, style: const TextStyle(color: Color(0xFF00FFC2), fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2)));
 
-  // ... (Other Modals: _showSearch, _showAI, _showDevConsole - Same as before)
   void _showSearch(BuildContext context, BrowserProvider b) {
     showModalBottomSheet(context: context, isScrollControlled: true, backgroundColor: Colors.transparent, builder: (_) => SearchSheet(browser: b));
   }
@@ -538,7 +629,71 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
   }
 }
 
-// ... (Classes: GlassBox, SearchSheet, AiSheet, DevConsoleSheet, SourceViewerPage - Same as before)
+class StartPage extends StatelessWidget {
+  final BrowserProvider browser;
+  const StartPage({super.key, required this.browser});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: Colors.black,
+      child: Center(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Iconsax.global, size: 80, color: Color(0xFF00FFC2)),
+              const SizedBox(height: 20),
+              const Text("NEON BROWSER", style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold, letterSpacing: 2)),
+              const SizedBox(height: 40),
+              // Search Box
+              Container(
+                margin: const EdgeInsets.symmetric(horizontal: 40),
+                decoration: BoxDecoration(color: Colors.white10, borderRadius: BorderRadius.circular(30), border: Border.all(color: Colors.white24)),
+                child: TextField(
+                  style: const TextStyle(color: Colors.white),
+                  textAlign: TextAlign.center,
+                  decoration: const InputDecoration(hintText: "Search or enter URL", hintStyle: TextStyle(color: Colors.white30), border: InputBorder.none, contentPadding: EdgeInsets.all(16)),
+                  onSubmitted: (v) => browser.loadUrl(v),
+                ),
+              ),
+              const SizedBox(height: 40),
+              // Speed Dial
+              Wrap(
+                spacing: 20, runSpacing: 20,
+                children: [
+                  _speedDial(Iconsax.search_normal, "Google", "google.com", Colors.blue),
+                  _speedDial(Iconsax.video, "Youtube", "youtube.com", Colors.red),
+                  _speedDial(Iconsax.gram, "Instagram", "instagram.com", Colors.purple),
+                  _speedDial(Iconsax.code, "GitHub", "github.com", Colors.white),
+                ],
+              )
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _speedDial(IconData icon, String label, String url, Color color) {
+    return GestureDetector(
+      onTap: () => browser.loadUrl(url),
+      child: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(color: Colors.white.withOpacity(0.05), shape: BoxShape.circle),
+            child: Icon(icon, color: color, size: 28),
+          ),
+          const SizedBox(height: 8),
+          Text(label, style: const TextStyle(color: Colors.white54, fontSize: 12)),
+        ],
+      ),
+    );
+  }
+}
+
+// ... (Other Classes: GlassBox, SearchSheet, AiSheet, DevConsoleSheet, SourceViewerPage - Same as before)
 class GlassBox extends StatelessWidget {
   final Widget child;
   final double borderRadius;
