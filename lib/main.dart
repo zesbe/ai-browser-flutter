@@ -227,7 +227,7 @@ class BrowserProvider extends ChangeNotifier {
 
   void clearData() async {
     await currentTab.controller?.clearCache();
-    await InAppWebViewController.clearAllCookies();
+    await CookieManager.instance().deleteAllCookies();
     history.clear();
     await _saveData();
     notifyListeners();
