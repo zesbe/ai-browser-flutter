@@ -28,9 +28,14 @@ jobs:
       - name: Generate Platform Files
         run: |
           flutter create . --platforms android --project-name ai_browser_agent
-          # Tambahkan izin internet ke AndroidManifest.xml
+          # Tambahkan izin internet dan microphone ke AndroidManifest.xml
           sed -i '/<application/i \    <uses-permission android:name="android.permission.INTERNET" />' android/app/src/main/AndroidManifest.xml
           sed -i '/<application/i \    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />' android/app/src/main/AndroidManifest.xml
+          sed -i '/<application/i \    <uses-permission android:name="android.permission.RECORD_AUDIO" />' android/app/src/main/AndroidManifest.xml
+          sed -i '/<application/i \    <uses-permission android:name="android.permission.BLUETOOTH" />' android/app/src/main/AndroidManifest.xml
+
+          # Update minSdkVersion to 23 for modern plugins
+          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 23/' android/app/build.gradle
 
       - name: Install Dependencies
         run: flutter pub get
