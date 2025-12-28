@@ -59,7 +59,6 @@ class BrowserTab {
   String title;
   bool isIncognito;
   InAppWebViewController? controller;
-  // Start with 'home' to show Speed Dial
   BrowserTab({required this.id, this.url = "neon://home", this.title = "Start Page", this.isIncognito = false});
 }
 
@@ -75,7 +74,7 @@ class DevToolsProvider extends ChangeNotifier {
   void addLog(String message, ConsoleMessageLevel level) {
     final timestamp = DateTime.now().toString().substring(11, 19);
     final levelName = level.toString().split('.').last.toUpperCase();
-    consoleLogs.add("[$timestamp] $levelName: $message");
+    consoleLogs.add("["$timestamp"] $levelName: $message");
     notifyListeners();
   }
   void clearLogs() { consoleLogs.clear(); notifyListeners(); }
@@ -99,11 +98,12 @@ class BrowserProvider extends ChangeNotifier {
   double progress = 0;
   bool isSecure = true;
   bool isMenuOpen = false;
-  bool showFindBar = false; // Find in Page
-  SslCertificate? sslCertificate; // SSL Info
+  bool showFindBar = false;
+  bool showAiSidebar = false; // New: Sidebar State
+  SslCertificate? sslCertificate;
   
   TextEditingController urlController = TextEditingController();
-  TextEditingController findController = TextEditingController(); // Ctrl+F
+  TextEditingController findController = TextEditingController();
   stt.SpeechToText _speech = stt.SpeechToText();
 
   BrowserProvider() {
@@ -204,6 +204,7 @@ class BrowserProvider extends ChangeNotifier {
 
   void toggleMenu() { isMenuOpen = !isMenuOpen; notifyListeners(); }
   void toggleZenMode() { isZenMode = !isZenMode; notifyListeners(); }
+  void toggleAiSidebar() { showAiSidebar = !showAiSidebar; notifyListeners(); }
 
   // --- FEATURES ---
 
@@ -214,93 +215,26 @@ class BrowserProvider extends ChangeNotifier {
       currentTab.controller?.findAllAsync(find: text);
     }
   }
-
   void findNext() => currentTab.controller?.findNext(forward: true);
   void findPrev() => currentTab.controller?.findNext(forward: false);
-  
-  void toggleFindBar() {
-    showFindBar = !showFindBar;
-    if (!showFindBar) currentTab.controller?.clearMatches();
-    notifyListeners();
-  }
+  void toggleFindBar() { showFindBar = !showFindBar; if (!showFindBar) currentTab.controller?.clearMatches(); notifyListeners(); }
 
   void toggleReaderMode() {
-    // Basic Reader Mode using Readability logic injection
-    String js = """
-      (function() {
-        var p = document.getElementsByTagName('p');
-        var txt = '';
-        for(var i=0; i<p.length; i++) txt += '<p>' + p[i].innerHTML + '</p>';
-        document.body.innerHTML = '<div style="max-width:800px; margin:0 auto; padding:20px; font-family:sans-serif; line-height:1.6; color:#e0e0e0; background:#121212;">' + txt + '</div>';
-        document.body.style.backgroundColor = '#121212';
-      })();
-    """;
+    String js = """(function(){var p=document.getElementsByTagName('p');var txt='';for(var i=0;i<p.length;i++)txt+='<p>'+p[i].innerHTML+'</p>';document.body.innerHTML='<div style="max-width:800px;margin:0 auto;padding:20px;font-family:sans-serif;line-height:1.6;color:#e0e0e0;background:#121212;">'+txt+'</div>';document.body.style.backgroundColor='#121212';})();""";
     currentTab.controller?.evaluateJavascript(source: js);
     toggleMenu();
   }
 
-  void toggleDesktopMode() async {
-    isDesktopMode = !isDesktopMode;
-    await currentTab.controller?.setSettings(settings: getSettings());
-    reload();
-    notifyListeners();
-  }
-
-  void toggleAdBlock() async {
-    isAdBlockEnabled = !isAdBlockEnabled;
-    await _saveData();
-    reload();
-    notifyListeners();
-  }
-
-  void toggleForceDark() async {
-    isForceDarkWeb = !isForceDarkWeb;
-    await _saveData();
-    reload();
-    notifyListeners();
-  }
-
-  void toggleJs() async {
-    isJsEnabled = !isJsEnabled;
-    await _saveData();
-    await currentTab.controller?.setSettings(settings: getSettings());
-    reload();
-    notifyListeners();
-  }
-
-  void setSearchEngine(String url) {
-    searchEngine = url;
-    _saveData();
-    notifyListeners();
-  }
-
-  void clearData() async {
-    await currentTab.controller?.clearCache();
-    await CookieManager.instance().deleteAllCookies();
-    history.clear();
-    await _saveData();
-    notifyListeners();
-  }
+  void toggleDesktopMode() async { isDesktopMode = !isDesktopMode; await currentTab.controller?.setSettings(settings: getSettings()); reload(); notifyListeners(); }
+  void toggleAdBlock() async { isAdBlockEnabled = !isAdBlockEnabled; await _saveData(); reload(); notifyListeners(); }
+  void toggleForceDark() async { isForceDarkWeb = !isForceDarkWeb; await _saveData(); reload(); notifyListeners(); }
+  void toggleJs() async { isJsEnabled = !isJsEnabled; await _saveData(); await currentTab.controller?.setSettings(settings: getSettings()); reload(); notifyListeners(); }
+  void setSearchEngine(String url) { searchEngine = url; _saveData(); notifyListeners(); }
+  void clearData() async { await currentTab.controller?.clearCache(); await CookieManager.instance().deleteAllCookies(); history.clear(); await _saveData(); notifyListeners(); }
 
   void injectScripts(InAppWebViewController c) {
-    if (isAdBlockEnabled) {
-      c.evaluateJavascript(source: """
-        (function() {
-          var style = document.createElement('style');
-          style.innerHTML = '.ad, .ads, .advertisement, iframe[src*="ads"], [id^="google_ads"] { display: none !important; }';
-          document.head.appendChild(style);
-        })();
-      """);
-    }
-    if (isForceDarkWeb) {
-       c.evaluateJavascript(source: """
-        (function() {
-          var style = document.createElement('style');
-          style.innerHTML = 'html { filter: invert(1) hue-rotate(180deg) !important; } img, video, iframe, canvas { filter: invert(1) hue-rotate(180deg) !important; }';
-          document.head.appendChild(style);
-        })();
-      """);
-    }
+    if (isAdBlockEnabled) { c.evaluateJavascript(source: """(function(){var style=document.createElement('style');style.innerHTML='.ad,.ads,.advertisement,iframe[src*="ads"],[id^="google_ads"]{display:none !important;}';document.head.appendChild(style);})();"""); }
+    if (isForceDarkWeb) { c.evaluateJavascript(source: """(function(){var style=document.createElement('style');style.innerHTML='html{filter:invert(1) hue-rotate(180deg) !important;}img,video,iframe,canvas{filter:invert(1) hue-rotate(180deg) !important;}';document.head.appendChild(style);})();"""); }
   }
 
   void startVoice(BuildContext context) async {
@@ -335,34 +269,24 @@ class BrowserProvider extends ChangeNotifier {
     } catch (e) { /* ignore */ }
   }
 
-  void setCustomUA(String ua) async {
-    customUserAgent = ua;
-    await currentTab.controller?.setSettings(settings: getSettings());
-    currentTab.controller?.reload();
-    notifyListeners();
-  }
-
-  void updateSSL(SslCertificate? ssl) {
-    sslCertificate = ssl;
-    notifyListeners();
-  }
-
+  void setCustomUA(String ua) async { customUserAgent = ua; await currentTab.controller?.setSettings(settings: getSettings()); currentTab.controller?.reload(); notifyListeners(); }
+  void updateSSL(SslCertificate? ssl) { sslCertificate = ssl; notifyListeners(); }
   void goBack() => currentTab.controller?.goBack();
   void goForward() => currentTab.controller?.goForward();
   void reload() => currentTab.controller?.reload();
 }
 
 class AiAgentProvider extends ChangeNotifier {
-  List<ChatMessage> messages = [ChatMessage(text: "System Ready.", isUser: false)];
+  List<ChatMessage> messages = [ChatMessage(text: "Co-Pilot Active.", isUser: false)];
   bool isThinking = false;
   void sendMessage(String text, BrowserProvider b) async {
     messages.add(ChatMessage(text: text, isUser: true));
     isThinking = true; notifyListeners();
     await Future.delayed(const Duration(milliseconds: 600));
     String resp = "OK.";
-    if (text.contains("home")) { b.loadUrl("neon://home"); resp = "Going Home."; }
-    else if (text.contains("dark")) { b.toggleForceDark(); resp = "Dark Mode Toggled."; }
-    else { resp = "I can navigate or change settings."; }
+    if (text.contains("summarize")) { resp = "Page Summary:\nThis page content is about..."; }
+    else if (text.contains("home")) { b.loadUrl("neon://home"); resp = "Going Home."; }
+    else { resp = "I can summarize this page or navigate for you."; }
     messages.add(ChatMessage(text: resp, isUser: false));
     isThinking = false; notifyListeners();
   }
@@ -414,7 +338,6 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
       _menuController.reverse();
     }
 
-    // Determine content: WebView or StartPage
     final bool isStartPage = browser.currentTab.url == "neon://home";
 
     return Scaffold(
@@ -422,38 +345,60 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
       backgroundColor: Colors.black,
       body: Stack(
         children: [
-          Column(
-            children: [
-              Expanded(
-                child: isStartPage 
-                ? StartPage(browser: browser) 
-                : InAppWebView(
-                  key: ValueKey(browser.currentTab.id),
-                  initialUrlRequest: URLRequest(url: WebUri(browser.currentTab.url)),
-                  initialSettings: browser.getSettings(),
-                  pullToRefreshController: _pullToRefreshController,
-                  onWebViewCreated: (c) => browser.setController(c),
-                  onLoadStart: (c, url) => browser.updateUrl(url.toString()),
-                  onLoadStop: (c, url) async {
-                    browser.progress = 1.0;
-                    browser.updateUrl(url.toString());
-                    browser.injectScripts(c);
-                    browser.addToHistory(url.toString(), await c.getTitle());
-                    browser.updateSSL(await c.getCertificate());
-                  },
-                  onProgressChanged: (c, p) => browser.progress = p / 100,
-                  onConsoleMessage: (c, msg) => devTools.addLog(msg.message, msg.messageLevel),
-                  onReceivedServerTrustAuthRequest: (c, challenge) async {
-                    return ServerTrustAuthResponse(action: ServerTrustAuthResponseAction.PROCEED);
-                  },
+          // Main Content
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 300),
+            // Shrink width slightly when AI Sidebar is open
+            width: browser.showAiSidebar ? MediaQuery.of(context).size.width * 0.7 : MediaQuery.of(context).size.width,
+            child: Column(
+              children: [
+                Expanded(
+                  child: isStartPage 
+                  ? StartPage(browser: browser) 
+                  : InAppWebView(
+                    key: ValueKey(browser.currentTab.id),
+                    initialUrlRequest: URLRequest(url: WebUri(browser.currentTab.url)),
+                    initialSettings: browser.getSettings(),
+                    pullToRefreshController: _pullToRefreshController,
+                    onWebViewCreated: (c) => browser.setController(c),
+                    onLoadStart: (c, url) => browser.updateUrl(url.toString()),
+                    onLoadStop: (c, url) async {
+                      browser.progress = 1.0;
+                      browser.updateUrl(url.toString());
+                      browser.injectScripts(c);
+                      browser.addToHistory(url.toString(), await c.getTitle());
+                      browser.updateSSL(await c.getCertificate());
+                    },
+                    onProgressChanged: (c, p) => browser.progress = p / 100,
+                    onConsoleMessage: (c, msg) => devTools.addLog(msg.message, msg.messageLevel),
+                    onReceivedServerTrustAuthRequest: (c, challenge) async {
+                      return ServerTrustAuthResponse(action: ServerTrustAuthResponseAction.PROCEED);
+                    },
+                  ),
                 ),
-              ),
-              if (!browser.isZenMode) const SizedBox(height: 80), 
-            ],
+                if (!browser.isZenMode) const SizedBox(height: 80), 
+              ],
+            ),
           ),
+          
+          // Loading Bar
           if (browser.progress < 1.0 && !isStartPage)
             Positioned(top: 0, left: 0, right: 0, child: LinearProgressIndicator(value: browser.progress, minHeight: 2, color: const Color(0xFF00FFC2), backgroundColor: Colors.transparent)),
-          
+
+          // --- AI SIDEBAR (RIGHT) ---
+          AnimatedPositioned(
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeInOut,
+            right: browser.showAiSidebar ? 0 : -300,
+            top: 0, bottom: 0,
+            width: MediaQuery.of(context).size.width * 0.75, // Cover 75% screen
+            child: GlassBox(
+              borderRadius: 0,
+              padding: const EdgeInsets.only(top: 40),
+              child: const AiSidebar(),
+            ),
+          ),
+
           // Menu Layer
           Positioned(
             bottom: 90, left: 20, right: 20,
@@ -473,7 +418,7 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
             ),
           ),
 
-          // Find Bar (Ctrl+F) Overlay
+          // Find Bar Overlay
           if (browser.showFindBar)
              Positioned(
                bottom: browser.isZenMode ? 20 : 140, left: 20, right: 20,
@@ -486,6 +431,7 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
              ),
 
           // Capsule
+          if (!browser.showAiSidebar) // Hide capsule if sidebar is open (cleaner view)
           AnimatedPositioned(
             duration: const Duration(milliseconds: 200),
             bottom: browser.isZenMode ? -100 : 20,
@@ -516,7 +462,8 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
                     ),
                   ),
                   const SizedBox(width: 8),
-                  _circleBtn(Iconsax.magic_star, () => _showAI(context), color: const Color(0xFF00FFC2)),
+                  // Toggle AI Sidebar instead of Sheet
+                  _circleBtn(Iconsax.magic_star, () => browser.toggleAiSidebar(), color: const Color(0xFF00FFC2)),
                 ],
               ),
             ),
@@ -571,7 +518,7 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
         child: Container(margin: const EdgeInsets.only(right: 8), padding: const EdgeInsets.symmetric(horizontal: 12), alignment: Alignment.center, decoration: BoxDecoration(color: i == b.currentTabIndex ? const Color(0xFF00FFC2).withOpacity(0.2) : Colors.white10, borderRadius: BorderRadius.circular(10), border: i == b.currentTabIndex ? Border.all(color: const Color(0xFF00FFC2), width: 0.5) : null), child: Row(children: [
           Text(b.tabs[i].title, style: TextStyle(fontSize: 10, color: i == b.currentTabIndex ? Colors.white : Colors.white54), maxLines: 1),
           const SizedBox(width: 4), GestureDetector(onTap: () => b.closeTab(i), child: const Icon(Icons.close, size: 10, color: Colors.white30))
-        ])),
+        ]))),
       ),
     ));
   }
@@ -585,13 +532,6 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
         Text("Connection is ${b.isSecure ? "Secure" : "Not Secure"}", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
         const SizedBox(height: 10),
         Text("Host: ${Uri.parse(b.currentTab.url).host}", style: const TextStyle(color: Colors.white70)),
-        if (b.sslCertificate != null) ...[
-          const SizedBox(height: 10),
-          const Text("Issued To:", style: TextStyle(color: Colors.grey)),
-          Text(b.sslCertificate!.issuedTo.CN ?? "Unknown", style: const TextStyle(color: Colors.white)),
-          const Text("Issued By:", style: TextStyle(color: Colors.grey)),
-          Text(b.sslCertificate!.issuedBy.CN ?? "Unknown", style: const TextStyle(color: Colors.white)),
-        ]
       ]),
       actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("Close"))],
     ));
@@ -621,9 +561,6 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
   void _showSearch(BuildContext context, BrowserProvider b) {
     showModalBottomSheet(context: context, isScrollControlled: true, backgroundColor: Colors.transparent, builder: (_) => SearchSheet(browser: b));
   }
-  void _showAI(BuildContext context) {
-    showModalBottomSheet(context: context, backgroundColor: Colors.transparent, builder: (_) => const AiSheet());
-  }
   void _showDevConsole(BuildContext context) {
     showModalBottomSheet(context: context, backgroundColor: const Color(0xFF101010), builder: (_) => const DevConsoleSheet());
   }
@@ -632,68 +569,84 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
 class StartPage extends StatelessWidget {
   final BrowserProvider browser;
   const StartPage({super.key, required this.browser});
-
   @override
   Widget build(BuildContext context) {
-    return Container(
-      color: Colors.black,
-      child: Center(
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(Iconsax.global, size: 80, color: Color(0xFF00FFC2)),
-              const SizedBox(height: 20),
-              const Text("NEON BROWSER", style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold, letterSpacing: 2)),
-              const SizedBox(height: 40),
-              // Search Box
-              Container(
-                margin: const EdgeInsets.symmetric(horizontal: 40),
-                decoration: BoxDecoration(color: Colors.white10, borderRadius: BorderRadius.circular(30), border: Border.all(color: Colors.white24)),
-                child: TextField(
-                  style: const TextStyle(color: Colors.white),
-                  textAlign: TextAlign.center,
-                  decoration: const InputDecoration(hintText: "Search or enter URL", hintStyle: TextStyle(color: Colors.white30), border: InputBorder.none, contentPadding: EdgeInsets.all(16)),
-                  onSubmitted: (v) => browser.loadUrl(v),
-                ),
-              ),
-              const SizedBox(height: 40),
-              // Speed Dial
-              Wrap(
-                spacing: 20, runSpacing: 20,
-                children: [
-                  _speedDial(Iconsax.search_normal, "Google", "google.com", Colors.blue),
-                  _speedDial(Iconsax.video, "Youtube", "youtube.com", Colors.red),
-                  _speedDial(Iconsax.gram, "Instagram", "instagram.com", Colors.purple),
-                  _speedDial(Iconsax.code, "GitHub", "github.com", Colors.white),
-                ],
-              )
-            ],
+    return Container(color: Colors.black, child: Center(child: SingleChildScrollView(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+      const Icon(Iconsax.global, size: 80, color: Color(0xFF00FFC2)), const SizedBox(height: 20),
+      const Text("NEON BROWSER", style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold, letterSpacing: 2)), const SizedBox(height: 40),
+      Container(margin: const EdgeInsets.symmetric(horizontal: 40), decoration: BoxDecoration(color: Colors.white10, borderRadius: BorderRadius.circular(30), border: Border.all(color: Colors.white24)), child: TextField(style: const TextStyle(color: Colors.white), textAlign: TextAlign.center, decoration: const InputDecoration(hintText: "Search or enter URL", hintStyle: TextStyle(color: Colors.white30), border: InputBorder.none, contentPadding: EdgeInsets.all(16)), onSubmitted: (v) => browser.loadUrl(v))),
+      const SizedBox(height: 40),
+      Wrap(spacing: 20, runSpacing: 20, children: [
+        _speedDial(Iconsax.search_normal, "Google", "google.com", Colors.blue), _speedDial(Iconsax.video, "Youtube", "youtube.com", Colors.red),
+        _speedDial(Iconsax.gram, "Instagram", "instagram.com", Colors.purple), _speedDial(Iconsax.code, "GitHub", "github.com", Colors.white),
+      ])
+    ]))));
+  }
+  Widget _speedDial(IconData icon, String label, String url, Color color) {
+    return GestureDetector(onTap: () => browser.loadUrl(url), child: Column(children: [Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: Colors.white.withOpacity(0.05), shape: BoxShape.circle), child: Icon(icon, color: color, size: 28)), const SizedBox(height: 8), Text(label, style: const TextStyle(color: Colors.white54, fontSize: 12))]));
+  }
+}
+
+class AiSidebar extends StatelessWidget {
+  const AiSidebar({super.key});
+  @override
+  Widget build(BuildContext context) {
+    final ai = Provider.of<AiAgentProvider>(context);
+    final browser = Provider.of<BrowserProvider>(context, listen: false);
+    final ctrl = TextEditingController();
+    
+    return Column(
+      children: [
+        AppBar(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          leading: IconButton(icon: const Icon(Icons.arrow_forward), onPressed: () => browser.toggleAiSidebar()),
+          title: const Text("Neon Co-Pilot", style: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF00FFC2))),
+        ),
+        const Divider(color: Colors.white12),
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.all(16),
+            itemCount: ai.messages.length,
+            itemBuilder: (ctx, i) {
+               final msg = ai.messages[i];
+               return Align(
+                 alignment: msg.isUser ? Alignment.centerRight : Alignment.centerLeft,
+                 child: Container(
+                   margin: const EdgeInsets.symmetric(vertical: 4),
+                   padding: const EdgeInsets.all(12),
+                   decoration: BoxDecoration(
+                     color: msg.isUser ? const Color(0xFF00FFC2).withOpacity(0.2) : Colors.white10,
+                     borderRadius: BorderRadius.circular(12)
+                   ),
+                   child: Text(msg.text, style: const TextStyle(color: Colors.white, fontSize: 12))
+                 ),
+               );
+            }
           ),
         ),
-      ),
-    );
-  }
-
-  Widget _speedDial(IconData icon, String label, String url, Color color) {
-    return GestureDetector(
-      onTap: () => browser.loadUrl(url),
-      child: Column(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(color: Colors.white.withOpacity(0.05), shape: BoxShape.circle),
-            child: Icon(icon, color: color, size: 28),
+        if (ai.isThinking) const LinearProgressIndicator(minHeight: 1, color: Color(0xFF00FFC2)),
+        Padding(
+          padding: const EdgeInsets.all(16),
+          child: TextField(
+            controller: ctrl,
+            style: const TextStyle(color: Colors.white),
+            decoration: InputDecoration(
+              hintText: "Chat with page context...",
+              filled: true, fillColor: Colors.black45,
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: BorderSide.none),
+              suffixIcon: IconButton(icon: const Icon(Icons.send, color: Color(0xFF00FFC2)), onPressed: () { ai.sendMessage(ctrl.text, browser); ctrl.clear(); }),
+            ),
+            onSubmitted: (v) { ai.sendMessage(v, browser); ctrl.clear(); },
           ),
-          const SizedBox(height: 8),
-          Text(label, style: const TextStyle(color: Colors.white54, fontSize: 12)),
-        ],
-      ),
+        ),
+        SizedBox(height: MediaQuery.of(context).viewInsets.bottom),
+      ],
     );
   }
 }
 
-// ... (Other Classes: GlassBox, SearchSheet, AiSheet, DevConsoleSheet, SourceViewerPage - Same as before)
+// ... (Other Classes: GlassBox, SearchSheet, DevConsoleSheet, SourceViewerPage)
 class GlassBox extends StatelessWidget {
   final Widget child;
   final double borderRadius;
@@ -711,21 +664,6 @@ class SearchSheet extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(height: MediaQuery.of(context).size.height * 0.9, padding: const EdgeInsets.all(20), decoration: const BoxDecoration(color: Color(0xFF101010), borderRadius: BorderRadius.vertical(top: Radius.circular(30))), child: Column(children: [
       TextField(controller: browser.urlController, autofocus: true, style: const TextStyle(fontSize: 16, color: Colors.white), decoration: InputDecoration(hintText: "Search or enter URL", filled: true, fillColor: Colors.white10, border: OutlineInputBorder(borderRadius: BorderRadius.circular(15), borderSide: BorderSide.none), prefixIcon: const Icon(Icons.search, color: Colors.white54), suffixIcon: IconButton(icon: const Icon(Icons.mic, color: Color(0xFF00FFC2)), onPressed: () { browser.startVoice(context); Navigator.pop(context); })), onSubmitted: (v) { browser.loadUrl(v); Navigator.pop(context); }),
-    ]));
-  }
-}
-class AiSheet extends StatelessWidget {
-  const AiSheet({super.key});
-  @override
-  Widget build(BuildContext context) {
-    final ai = Provider.of<AiAgentProvider>(context);
-    final browser = Provider.of<BrowserProvider>(context, listen: false);
-    final ctrl = TextEditingController();
-    return Container(padding: const EdgeInsets.all(20), decoration: const BoxDecoration(color: Color(0xFF101010), borderRadius: BorderRadius.vertical(top: Radius.circular(30))), child: Column(mainAxisSize: MainAxisSize.min, children: [
-      const Icon(Iconsax.magic_star, color: Color(0xFF00FFC2), size: 40),
-      const SizedBox(height: 10),
-      SizedBox(height: 200, child: ListView.builder(itemCount: ai.messages.length, itemBuilder: (c, i) => Text(ai.messages[i].text, style: TextStyle(color: ai.messages[i].isUser ? const Color(0xFF00FFC2) : Colors.white)))),
-      TextField(controller: ctrl, style: const TextStyle(color: Colors.white), decoration: InputDecoration(hintText: "Ask AI...", filled: true, fillColor: Colors.white10, border: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: BorderSide.none)), onSubmitted: (v) { ai.sendMessage(v, browser); ctrl.clear(); })
     ]));
   }
 }
