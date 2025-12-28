@@ -151,7 +151,7 @@ class BrowserHomePage extends StatelessWidget {
                         hintText: "Search or enter address",
                         isDense: true,
                         filled: true,
-                        fillColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                        fillColor: Theme.of(context).colorScheme.surfaceVariant,
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(30),
                           borderSide: BorderSide.none,
