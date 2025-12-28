@@ -27,7 +27,7 @@ jobs:
 
       - name: Generate Platform Files
         run: |
-          flutter create . --platforms android
+          flutter create . --platforms android --project-name ai_browser_agent
           # Tambahkan izin internet ke AndroidManifest.xml
           sed -i '/<application/i \    <uses-permission android:name="android.permission.INTERNET" />' android/app/src/main/AndroidManifest.xml
           sed -i '/<application/i \    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />' android/app/src/main/AndroidManifest.xml
