@@ -27,8 +27,10 @@ jobs:
 
       - name: Generate Platform Files
         run: |
-          flutter create .
-          # Ensure kotlin version is compatible if needed, or rely on default template
+          flutter create . --platforms android
+          # Tambahkan izin internet ke AndroidManifest.xml
+          sed -i '/<application/i \    <uses-permission android:name="android.permission.INTERNET" />' android/app/src/main/AndroidManifest.xml
+          sed -i '/<application/i \    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />' android/app/src/main/AndroidManifest.xml
 
       - name: Install Dependencies
         run: flutter pub get
