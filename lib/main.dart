@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -7,8 +8,11 @@ import 'package:share_plus/share_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:uuid/uuid.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
   runApp(
     MultiProvider(
       providers: [
@@ -53,10 +57,36 @@ class BrowserTab {
   final String id;
   String url;
   String title;
+  bool isIncognito;
   InAppWebViewController? controller;
-  Uint8List? screenshot; // For tab switcher thumbnail
 
-  BrowserTab({required this.id, this.url = "https://www.google.com", this.title = "New Tab"});
+  BrowserTab({
+    required this.id, 
+    this.url = "https://www.google.com", 
+    this.title = "New Tab",
+    this.isIncognito = false,
+  });
+}
+
+class HistoryItem {
+  final String url;
+  final String title;
+  final DateTime date;
+
+  HistoryItem({required this.url, required this.title, required this.date});
+
+  Map<String, dynamic> toJson() => {'url': url, 'title': title, 'date': date.toIso8601String()};
+  factory HistoryItem.fromJson(Map<String, dynamic> json) => HistoryItem(
+    url: json['url'], title: json['title'], date: DateTime.parse(json['date']));
+}
+
+class BookmarkItem {
+  final String url;
+  final String title;
+  BookmarkItem({required this.url, required this.title});
+  
+  Map<String, dynamic> toJson() => {'url': url, 'title': title};
+  factory BookmarkItem.fromJson(Map<String, dynamic> json) => BookmarkItem(url: json['url'], title: json['title']);
 }
 
 // --- Providers ---
@@ -65,41 +95,78 @@ class BrowserProvider extends ChangeNotifier {
   List<BrowserTab> tabs = [];
   int currentTabIndex = 0;
   
-  // State for current tab
+  List<HistoryItem> history = [];
+  List<BookmarkItem> bookmarks = [];
+  
+  // Settings
+  String searchEngine = "https://www.google.com/search?q=";
+  bool isDesktopMode = false;
+  bool isAdBlockEnabled = true;
+  bool isReaderMode = false;
+  bool isForceDarkWeb = false;
+  
+  // State
   double progress = 0;
   bool isLoading = false;
   bool isSecure = true;
-  bool isDesktopMode = false;
-  bool isAdBlockEnabled = true; // Default ON
-  bool isReaderMode = false;
-  
+  bool showFindOnPage = false;
   TextEditingController urlController = TextEditingController();
+  TextEditingController findController = TextEditingController();
   
   // Voice
   stt.SpeechToText _speech = stt.SpeechToText();
   bool _isListening = false;
 
   BrowserProvider() {
+    _loadData();
     _addNewTab();
   }
 
   BrowserTab get currentTab => tabs[currentTabIndex];
 
-  final InAppWebViewSettings settings = InAppWebViewSettings(
-    isInspectable: true,
-    mediaPlaybackRequiresUserGesture: false,
-    allowsInlineMediaPlayback: true,
-    cacheEnabled: true,
-    domStorageEnabled: true,
-    databaseEnabled: true,
-    useWideViewPort: true,
-    safeBrowsingEnabled: true,
-    mixedContentMode: MixedContentMode.MIXED_CONTENT_COMPATIBILITY_MODE,
-  );
+  InAppWebViewSettings getSettings() {
+    return InAppWebViewSettings(
+      isInspectable: true,
+      mediaPlaybackRequiresUserGesture: false,
+      allowsInlineMediaPlayback: true,
+      cacheEnabled: !currentTab.isIncognito, // No cache in incognito
+      domStorageEnabled: !currentTab.isIncognito,
+      databaseEnabled: !currentTab.isIncognito,
+      useWideViewPort: true,
+      safeBrowsingEnabled: true,
+      mixedContentMode: MixedContentMode.MIXED_CONTENT_COMPATIBILITY_MODE,
+      userAgent: isDesktopMode
+          ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+          : "" // Default
+    );
+  }
+
+  Future<void> _loadData() async {
+    final prefs = await SharedPreferences.getInstance();
+    
+    // Load History
+    final historyList = prefs.getStringList('history') ?? [];
+    history = historyList.map((e) => HistoryItem.fromJson(jsonDecode(e))).toList();
+    
+    // Load Bookmarks
+    final bookmarksList = prefs.getStringList('bookmarks') ?? [];
+    bookmarks = bookmarksList.map((e) => BookmarkItem.fromJson(jsonDecode(e))).toList();
+    
+    // Load Settings
+    searchEngine = prefs.getString('searchEngine') ?? "https://www.google.com/search?q=";
+    notifyListeners();
+  }
+
+  Future<void> _saveData() async {
+    final prefs = await SharedPreferences.getInstance();
+    prefs.setStringList('history', history.map((e) => jsonEncode(e.toJson())).toList());
+    prefs.setStringList('bookmarks', bookmarks.map((e) => jsonEncode(e.toJson())).toList());
+    prefs.setString('searchEngine', searchEngine);
+  }
 
   // --- Tab Management ---
-  void _addNewTab([String url = "https://www.google.com"]) {
-    final newTab = BrowserTab(id: const Uuid().v4(), url: url);
+  void _addNewTab([String url = "https://www.google.com", bool incognito = false]) {
+    final newTab = BrowserTab(id: const Uuid().v4(), url: url, isIncognito: incognito);
     tabs.add(newTab);
     currentTabIndex = tabs.length - 1;
     _updateCurrentTabState();
@@ -115,7 +182,6 @@ class BrowserProvider extends ChangeNotifier {
       _updateCurrentTabState();
       notifyListeners();
     } else {
-      // Don't close the last tab, just reset it
       loadUrl("https://www.google.com");
     }
   }
@@ -129,20 +195,17 @@ class BrowserProvider extends ChangeNotifier {
   void _updateCurrentTabState() {
     urlController.text = currentTab.url;
     isSecure = currentTab.url.startsWith("https://");
-    // Reset transient states
     progress = 0;
     isLoading = false;
+    showFindOnPage = false;
   }
 
-  // --- WebView Actions ---
-  
+  // --- Core Browser Logic ---
+
   void setController(InAppWebViewController controller) {
     currentTab.controller = controller;
-    
-    // Inject AdBlock if enabled
-    if (isAdBlockEnabled) {
-      _injectAdBlocker(controller);
-    }
+    if (isAdBlockEnabled) _injectAdBlocker(controller);
+    if (isForceDarkWeb) _injectDarkMode(controller);
   }
 
   void updateUrl(String url) {
@@ -152,17 +215,32 @@ class BrowserProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  void updateTitle(String? title) {
-    if (title != null) {
-      currentTab.title = title;
-      notifyListeners();
-    }
+  void addToHistory(String url, String? title) {
+    if (currentTab.isIncognito) return;
+    if (url.isEmpty || url == "about:blank") return;
+    
+    // Avoid duplicates on top
+    if (history.isNotEmpty && history.first.url == url) return;
+
+    history.insert(0, HistoryItem(url: url, title: title ?? "Unknown", date: DateTime.now()));
+    if (history.length > 200) history.removeLast(); // Limit history
+    _saveData();
   }
 
-  void updateProgress(double p) {
-    progress = p;
-    isLoading = p < 1.0;
+  void toggleBookmark() {
+    final url = currentTab.url;
+    final exists = bookmarks.any((b) => b.url == url);
+    if (exists) {
+      bookmarks.removeWhere((b) => b.url == url);
+    } else {
+      bookmarks.add(BookmarkItem(url: url, title: currentTab.title));
+    }
+    _saveData();
     notifyListeners();
+  }
+
+  bool isBookmarked(String url) {
+    return bookmarks.any((b) => b.url == url);
   }
 
   void loadUrl(String url) {
@@ -170,70 +248,61 @@ class BrowserProvider extends ChangeNotifier {
       if (url.contains(".") && !url.contains(" ")) {
         url = "https://$url";
       } else {
-        url = "https://www.google.com/search?q=$url";
+        url = "$searchEngine$url";
       }
     }
     currentTab.controller?.loadUrl(urlRequest: URLRequest(url: WebUri(url)));
   }
 
-  void toggleDesktopMode() async {
-    isDesktopMode = !isDesktopMode;
-    settings.preferredContentMode = isDesktopMode 
-        ? UserPreferredContentMode.DESKTOP 
-        : UserPreferredContentMode.MOBILE;
-    settings.userAgent = isDesktopMode
-        ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        : ""; 
-        
-    await currentTab.controller?.setSettings(settings: settings);
-    reload();
+  void setSearchEngine(String engineUrl) {
+    searchEngine = engineUrl;
+    _saveData();
     notifyListeners();
   }
 
   // --- Features ---
 
-  void toggleReaderMode() {
-    isReaderMode = !isReaderMode;
-    if (isReaderMode) {
-      // Simple Readability logic (removes non-article content)
-      String js = """
-        var readability = document.createElement('script');
-        readability.src = 'https://unpkg.com/@mozilla/readability/Readability.js';
-        document.head.appendChild(readability);
-        
-        // Wait for script, then execute (simplified for demo)
-        // Actual implementation requires offline Readability.js source code or parsing
-        // For this demo, we'll use a CSS filter approach
-        
-        var style = document.createElement('style');
-        style.id = 'reader-mode-css';
-        style.innerHTML = `
-          body { font-family: sans-serif !important; line-height: 1.6 !important; max-width: 800px !important; margin: 0 auto !important; background: #fdf6e3 !important; color: #111 !important; padding: 20px !important; }
-          nav, footer, aside, .ad, .ads, .social-share, #comments { display: none !important; }
-        `;
-        document.head.appendChild(style);
-      """;
-      currentTab.controller?.evaluateJavascript(source: js);
-    } else {
-      // Remove reader styles logic would go here (usually easier to reload)
-      reload();
-    }
+  void toggleForceDark() {
+    isForceDarkWeb = !isForceDarkWeb;
+    reload(); 
     notifyListeners();
+  }
+  
+  void _injectDarkMode(InAppWebViewController controller) {
+     // Powerful filter based dark mode
+     String js = """
+      var style = document.createElement('style');
+      style.innerHTML = `
+        html { filter: invert(1) hue-rotate(180deg) !important; }
+        img, video, iframe, canvas { filter: invert(1) hue-rotate(180deg) !important; }
+      `;
+      document.head.appendChild(style);
+     """;
+     controller.evaluateJavascript(source: js);
   }
 
   void _injectAdBlocker(InAppWebViewController controller) {
-    // Basic CSS hider for common ad classes
     String css = """
-      .ad, .ads, .advertisement, .banner-ad, [id^="google_ads"], [class^="ad-"], [class*=" ad "], iframe[src*="ads"] {
-        display: none !important;
-        visibility: hidden !important;
-        height: 0 !important;
-        width: 0 !important;
-      }
+      .ad, .ads, .advertisement, [id^="google_ads"], [class^="ad-"], iframe[src*="ads"] { display: none !important; }
     """;
     controller.injectCSSCode(source: css);
   }
 
+  void findInPage(String query) {
+    if (query.isEmpty) {
+      currentTab.controller?.clearMatches();
+    } else {
+      currentTab.controller?.findAllAsync(find: query);
+    }
+  }
+
+  void toggleFindOnPage() {
+    showFindOnPage = !showFindOnPage;
+    if (!showFindOnPage) currentTab.controller?.clearMatches();
+    notifyListeners();
+  }
+
+  // --- Voice & Utils ---
   void startVoiceSearch(BuildContext context) async {
     var status = await Permission.microphone.request();
     if (status.isGranted) {
@@ -254,27 +323,14 @@ class BrowserProvider extends ChangeNotifier {
     }
   }
 
-  void goBack() async {
-    if (await currentTab.controller?.canGoBack() ?? false) {
-      currentTab.controller?.goBack();
-    }
-  }
-
-  void goForward() async {
-    if (await currentTab.controller?.canGoForward() ?? false) {
-      currentTab.controller?.goForward();
-    }
-  }
-
-  void reload() {
-    currentTab.controller?.reload();
-  }
+  void reload() => currentTab.controller?.reload();
+  void goBack() => currentTab.controller?.goBack();
+  void goForward() => currentTab.controller?.goForward();
 }
 
 class AiAgentProvider extends ChangeNotifier {
-  // (Same AI implementation as before)
   List<ChatMessage> messages = [
-    ChatMessage(text: "Ultimate Agent ready. I can control the browser (e.g., 'Turn on reader mode').", isUser: false),
+    ChatMessage(text: "Browser OS ready. I can manage tabs, bookmarks, and settings.", isUser: false),
   ];
   bool isThinking = false;
 
@@ -284,20 +340,19 @@ class AiAgentProvider extends ChangeNotifier {
     notifyListeners();
 
     await Future.delayed(const Duration(seconds: 1));
-    
-    String response = "I understand.";
     String lower = text.toLowerCase();
-    
-    if (lower.contains("reader")) {
-      browser.toggleReaderMode();
-      response = "I've toggled Reader Mode for you.";
-    } else if (lower.contains("desktop")) {
-      browser.toggleDesktopMode();
-      response = "Switched to Desktop Mode.";
-    } else if (lower.contains("summarize")) {
-      response = "Page Summary:\nThis page discusses key concepts about..."; 
+    String response = "Action completed.";
+
+    if (lower.contains("incognito")) {
+      browser._addNewTab("https://www.google.com", true);
+      response = "Opened a new Incognito tab.";
+    } else if (lower.contains("history")) {
+      response = "You have visited ${browser.history.length} pages recently.";
+    } else if (lower.contains("dark")) {
+      browser.toggleForceDark();
+      response = "Toggled Dark Web Mode.";
     } else {
-       response = "I can help you navigate or analyze this page. Try asking for a summary or to change modes.";
+      response = "I can open Incognito tabs, check history, or toggle dark mode for you.";
     }
 
     messages.add(ChatMessage(text: response, isUser: false));
@@ -321,26 +376,25 @@ class BrowserHomePage extends StatelessWidget {
   Widget build(BuildContext context) {
     final browserProvider = Provider.of<BrowserProvider>(context);
 
-    // If showing tab switcher (future implementation), conditionally return that widget
-    // For now, we show the current tab view
-
     return Scaffold(
       backgroundColor: Theme.of(context).colorScheme.surface,
       body: SafeArea(
         child: Column(
           children: [
-            // Ultimate Header
+            // --- HEADER ---
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.surface,
+                color: browserProvider.currentTab.isIncognito ? Colors.grey[900] : Theme.of(context).colorScheme.surface,
                 boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 4, offset: const Offset(0, 2))]
               ),
               child: Column(
                 children: [
                   Row(
                     children: [
-                      // Secure Icon
+                      if (browserProvider.currentTab.isIncognito)
+                         const Padding(padding: EdgeInsets.only(right: 8), child: Icon(Iconsax.mask, color: Colors.white)),
+                      
                       Icon(
                         browserProvider.isSecure ? Iconsax.lock5 : Iconsax.unlock,
                         size: 16,
@@ -348,7 +402,6 @@ class BrowserHomePage extends StatelessWidget {
                       ),
                       const SizedBox(width: 8),
                       
-                      // URL Bar
                       Expanded(
                         child: Container(
                           height: 44,
@@ -362,10 +415,14 @@ class BrowserHomePage extends StatelessWidget {
                               border: InputBorder.none,
                               contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                               hintText: "Search or enter URL",
-                              suffixIcon: IconButton(
-                                icon: Icon(browserProvider._isListening ? Icons.mic : Iconsax.microphone),
-                                color: browserProvider._isListening ? Colors.red : null,
-                                onPressed: () => browserProvider.startVoiceSearch(context),
+                              suffixIcon: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    icon: Icon(browserProvider._isListening ? Icons.mic : Iconsax.microphone),
+                                    onPressed: () => browserProvider.startVoiceSearch(context),
+                                  ),
+                                ],
                               ),
                             ),
                             style: const TextStyle(fontSize: 14),
@@ -374,7 +431,6 @@ class BrowserHomePage extends StatelessWidget {
                         ),
                       ),
                       
-                      // Tab Count Button
                       const SizedBox(width: 8),
                       InkWell(
                         onTap: () => _showTabSwitcher(context, browserProvider),
@@ -385,10 +441,7 @@ class BrowserHomePage extends StatelessWidget {
                             borderRadius: BorderRadius.circular(8),
                           ),
                           alignment: Alignment.center,
-                          child: Text(
-                            "${browserProvider.tabs.length}",
-                            style: const TextStyle(fontWeight: FontWeight.bold),
-                          ),
+                          child: Text("${browserProvider.tabs.length}", style: const TextStyle(fontWeight: FontWeight.bold)),
                         ),
                       ),
                     ],
@@ -396,37 +449,52 @@ class BrowserHomePage extends StatelessWidget {
                   if (browserProvider.isLoading)
                     Padding(
                       padding: const EdgeInsets.only(top: 8.0),
-                      child: LinearProgressIndicator(
-                        value: browserProvider.progress, 
-                        minHeight: 2,
-                        backgroundColor: Colors.transparent,
-                      ),
+                      child: LinearProgressIndicator(value: browserProvider.progress, minHeight: 2),
                     ),
+                  
+                  // FIND IN PAGE BAR
+                  if (browserProvider.showFindOnPage)
+                    Container(
+                      margin: const EdgeInsets.only(top: 8),
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      color: Theme.of(context).colorScheme.surfaceContainer,
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: browserProvider.findController,
+                              decoration: const InputDecoration(hintText: "Find in page..."),
+                              onChanged: (val) => browserProvider.findInPage(val),
+                            ),
+                          ),
+                          IconButton(icon: const Icon(Icons.close), onPressed: browserProvider.toggleFindOnPage)
+                        ],
+                      ),
+                    )
                 ],
               ),
             ),
             
-            // WebView Stack (IndexedStack for preserving state is complex with WebViews, 
-            // simpler to rebuild for this MVP or use Offstage if memory permits. 
-            // For MVP, we just render current Tab)
+            // --- WEBVIEW ---
             Expanded(
               child: InAppWebView(
-                key: ValueKey(browserProvider.currentTab.id), // Unique key forces rebuild on tab switch if needed
+                key: ValueKey(browserProvider.currentTab.id),
                 initialUrlRequest: URLRequest(url: WebUri(browserProvider.currentTab.url)),
-                initialSettings: browserProvider.settings,
-                onWebViewCreated: (controller) {
-                  browserProvider.setController(controller);
-                },
-                onLoadStart: (controller, url) {
-                  browserProvider.updateUrl(url.toString());
-                },
+                initialSettings: browserProvider.getSettings(),
+                onWebViewCreated: (controller) => browserProvider.setController(controller),
+                onLoadStart: (controller, url) => browserProvider.updateUrl(url.toString()),
                 onLoadStop: (controller, url) async {
                   browserProvider.updateProgress(1.0);
-                  browserProvider.updateUrl(url.toString());
-                  browserProvider.updateTitle(await controller.getTitle());
+                  final title = await controller.getTitle();
+                  browserProvider.currentTab.title = title ?? "No Title";
+                  browserProvider.addToHistory(url.toString(), title);
                 },
-                onProgressChanged: (controller, progress) {
-                  browserProvider.updateProgress(progress / 100);
+                onProgressChanged: (controller, progress) => browserProvider.updateProgress(progress / 100),
+                onDownloadStartRequest: (controller, request) async {
+                   final url = Uri.parse(request.url.toString());
+                   if (await canLaunchUrl(url)) {
+                     await launchUrl(url, mode: LaunchMode.externalApplication);
+                   }
                 },
               ),
             ),
@@ -436,84 +504,65 @@ class BrowserHomePage extends StatelessWidget {
       bottomNavigationBar: BottomAppBar(
         height: 64,
         padding: const EdgeInsets.symmetric(horizontal: 8),
-        color: Theme.of(context).colorScheme.surface,
-        elevation: 12,
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
           children: [
             IconButton(icon: const Icon(Iconsax.arrow_left_2), onPressed: browserProvider.goBack),
             IconButton(icon: const Icon(Iconsax.arrow_right_3), onPressed: browserProvider.goForward),
-            
-            // AI Action Button (Central)
             FloatingActionButton(
               elevation: 2,
-              backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+              mini: true,
               child: const Icon(Iconsax.magic_star),
-              onPressed: () {
-                 showModalBottomSheet(
-                  context: context,
-                  isScrollControlled: true,
-                  backgroundColor: Colors.transparent,
-                  builder: (context) => const AiAgentPanel(),
-                );
-              },
+              onPressed: () => showModalBottomSheet(context: context, builder: (_) => const AiAgentPanel()),
             ),
-            
-            IconButton(icon: const Icon(Iconsax.book_1), 
-              color: browserProvider.isReaderMode ? Colors.green : null,
-              onPressed: browserProvider.toggleReaderMode
-            ),
-            IconButton(icon: const Icon(Iconsax.category), onPressed: () => _showToolsMenu(context, browserProvider)),
+            IconButton(icon: const Icon(Iconsax.document_download), onPressed: () => _showDownloadsHistory(context, browserProvider)),
+            IconButton(icon: const Icon(Iconsax.setting_2), onPressed: () => _showSettings(context, browserProvider)),
           ],
         ),
       ),
     );
   }
 
+  // --- SUB MENUS ---
+
   void _showTabSwitcher(BuildContext context, BrowserProvider provider) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      useSafeArea: true,
       builder: (context) {
         return Container(
+          height: MediaQuery.of(context).size.height * 0.8,
           color: Theme.of(context).colorScheme.surface,
           child: Column(
             children: [
               AppBar(
-                title: const Text("Tabs"),
+                title: const Text("Tabs"), 
                 automaticallyImplyLeading: false,
                 actions: [
-                  IconButton(icon: const Icon(Icons.add), onPressed: () {
+                  IconButton(icon: const Icon(Iconsax.add), onPressed: () {
                     provider._addNewTab();
+                    Navigator.pop(context);
+                  }),
+                   IconButton(icon: const Icon(Iconsax.mask), onPressed: () {
+                    provider._addNewTab("https://www.google.com", true);
                     Navigator.pop(context);
                   }),
                   IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(context)),
                 ],
               ),
               Expanded(
-                child: ListView.separated(
-                  padding: const EdgeInsets.all(16),
+                child: ListView.builder(
                   itemCount: provider.tabs.length,
-                  separatorBuilder: (_, __) => const SizedBox(height: 12),
                   itemBuilder: (context, index) {
                     final tab = provider.tabs[index];
-                    final isSelected = index == provider.currentTabIndex;
                     return ListTile(
-                      tileColor: isSelected ? Theme.of(context).colorScheme.primaryContainer : Theme.of(context).colorScheme.surfaceVariant,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                      title: Text(tab.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-                      subtitle: Text(tab.url, maxLines: 1, overflow: TextOverflow.ellipsis),
-                      leading: const Icon(Iconsax.global),
-                      trailing: IconButton(
-                        icon: const Icon(Icons.close),
-                        onPressed: () {
-                          provider.closeTab(index);
-                          // Rebuild handled by provider listener
-                          Navigator.pop(context); 
-                          _showTabSwitcher(context, provider); // Re-open to refresh
-                        },
-                      ),
+                      title: Text(tab.title),
+                      subtitle: Text(tab.url),
+                      leading: Icon(tab.isIncognito ? Iconsax.mask : Iconsax.global),
+                      trailing: IconButton(icon: const Icon(Icons.close), onPressed: () {
+                        provider.closeTab(index);
+                        Navigator.pop(context);
+                      }),
                       onTap: () {
                         provider.switchTab(index);
                         Navigator.pop(context);
@@ -529,49 +578,42 @@ class BrowserHomePage extends StatelessWidget {
     );
   }
 
-  void _showToolsMenu(BuildContext context, BrowserProvider provider) {
-    // (Same Tools menu as before, but added Reader Mode toggle already in BottomBar)
+  void _showDownloadsHistory(BuildContext context, BrowserProvider provider) {
     showModalBottomSheet(
       context: context,
-      showDragHandle: true,
       builder: (context) {
-        return Container(
-          padding: const EdgeInsets.all(16),
-          height: 350,
+        return DefaultTabController(
+          length: 2,
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text("Tools", style: Theme.of(context).textTheme.titleLarge),
-              const SizedBox(height: 16),
+              const TabBar(tabs: [Tab(text: "History"), Tab(text: "Bookmarks")]),
               Expanded(
-                child: GridView.count(
-                  crossAxisCount: 4,
+                child: TabBarView(
                   children: [
-                    _ToolIcon(
-                      icon: provider.isDesktopMode ? Icons.monitor : Icons.smartphone, 
-                      label: provider.isDesktopMode ? "Mobile" : "Desktop",
-                      isActive: provider.isDesktopMode,
-                      onTap: () {
-                        provider.toggleDesktopMode();
-                        Navigator.pop(context);
-                      },
+                    // HISTORY
+                    ListView.builder(
+                      itemCount: provider.history.length,
+                      itemBuilder: (_, i) {
+                        final item = provider.history[i];
+                        return ListTile(
+                          title: Text(item.title, maxLines: 1),
+                          subtitle: Text(item.url, maxLines: 1),
+                          onTap: () { provider.loadUrl(item.url); Navigator.pop(context); },
+                        );
+                      }
                     ),
-                    _ToolIcon(
-                      icon: Icons.block, 
-                      label: "AdBlock",
-                      isActive: provider.isAdBlockEnabled,
-                      onTap: () {
-                        provider.isAdBlockEnabled = !provider.isAdBlockEnabled;
-                        provider.reload();
-                        Navigator.pop(context);
-                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("AdBlock ${provider.isAdBlockEnabled ? "ON" : "OFF"}")));
-                      },
-                    ),
-                    _ToolIcon(
-                      icon: Iconsax.share, label: "Share",
-                      onTap: () { Share.share(provider.currentTab.url); Navigator.pop(context); }
-                    ),
-                    _ToolIcon(icon: Iconsax.printer, label: "Print", onTap: () => Navigator.pop(context)),
+                    // BOOKMARKS
+                    ListView.builder(
+                      itemCount: provider.bookmarks.length,
+                      itemBuilder: (_, i) {
+                        final item = provider.bookmarks[i];
+                        return ListTile(
+                          title: Text(item.title),
+                          leading: const Icon(Iconsax.star1, color: Colors.orange),
+                          onTap: () { provider.loadUrl(item.url); Navigator.pop(context); },
+                        );
+                      }
+                    )
                   ],
                 ),
               ),
@@ -581,36 +623,58 @@ class BrowserHomePage extends StatelessWidget {
       },
     );
   }
-}
 
-class _ToolIcon extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
-  final bool isActive;
-
-  const _ToolIcon({required this.icon, required this.label, required this.onTap, this.isActive = false});
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: isActive ? Theme.of(context).colorScheme.primary : Theme.of(context).colorScheme.surfaceVariant,
-              shape: BoxShape.circle,
+  void _showSettings(BuildContext context, BrowserProvider provider) {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) {
+        return ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            const Text("Tools & Settings", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+            const Divider(),
+            ListTile(
+              leading: Icon(provider.isBookmarked(provider.currentTab.url) ? Iconsax.star1 : Iconsax.star, 
+                color: provider.isBookmarked(provider.currentTab.url) ? Colors.orange : null),
+              title: const Text("Bookmark This Page"),
+              onTap: () { provider.toggleBookmark(); Navigator.pop(context); },
             ),
-            child: Icon(icon, color: isActive ? Colors.white : Theme.of(context).colorScheme.onSurfaceVariant),
-          ),
-          const SizedBox(height: 8),
-          Text(label, style: const TextStyle(fontSize: 12)),
-        ],
-      ),
+            ListTile(
+              leading: const Icon(Iconsax.search_status),
+              title: const Text("Find in Page"),
+              onTap: () { provider.toggleFindOnPage(); Navigator.pop(context); },
+            ),
+            SwitchListTile(
+              title: const Text("Dark Web Mode"),
+              subtitle: const Text("Force dark theme on all sites"),
+              value: provider.isForceDarkWeb,
+              onChanged: (val) { provider.toggleForceDark(); Navigator.pop(context); },
+            ),
+             SwitchListTile(
+              title: const Text("Desktop Mode"),
+              value: provider.isDesktopMode,
+              onChanged: (val) { 
+                provider.isDesktopMode = !provider.isDesktopMode; 
+                provider.reload();
+                Navigator.pop(context); 
+              },
+            ),
+             ListTile(
+              leading: const Icon(Icons.search),
+              title: const Text("Search Engine"),
+              subtitle: Text(provider.searchEngine.contains("google") ? "Google" : "DuckDuckGo"),
+              onTap: () {
+                provider.setSearchEngine(
+                  provider.searchEngine.contains("google") 
+                  ? "https://duckduckgo.com/?q=" 
+                  : "https://www.google.com/search?q="
+                );
+                Navigator.pop(context);
+              },
+            ),
+          ],
+        );
+      },
     );
   }
 }
@@ -625,17 +689,14 @@ class AiAgentPanel extends StatelessWidget {
     final textController = TextEditingController();
 
     return Container(
-      height: MediaQuery.of(context).size.height * 0.85,
-      decoration: BoxDecoration(color: Theme.of(context).colorScheme.surface, borderRadius: const BorderRadius.vertical(top: Radius.circular(24))),
+      height: MediaQuery.of(context).size.height * 0.7,
+      padding: const EdgeInsets.all(16),
       child: Column(
         children: [
-          const SizedBox(height: 16),
-          const Icon(Iconsax.magic_star, size: 32, color: Colors.blueAccent),
-          const Text("Browser Copilot", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+          const Text("AI Assistant", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
           const Divider(),
           Expanded(
             child: ListView.builder(
-              padding: const EdgeInsets.all(16),
               itemCount: aiProvider.messages.length,
               itemBuilder: (context, index) {
                 final msg = aiProvider.messages[index];
@@ -646,35 +707,27 @@ class AiAgentPanel extends StatelessWidget {
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
                       color: msg.isUser ? Colors.blueAccent : Colors.grey[200],
-                      borderRadius: BorderRadius.circular(16),
+                      borderRadius: BorderRadius.circular(12),
                     ),
-                    child: Text(msg.text, style: TextStyle(color: msg.isUser ? Colors.white : Colors.black87)),
+                    child: Text(msg.text, style: TextStyle(color: msg.isUser ? Colors.white : Colors.black)),
                   ),
                 );
               },
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: TextField(
-              controller: textController,
-              decoration: InputDecoration(
-                hintText: "Ask AI...",
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(30)),
-                suffixIcon: IconButton(icon: const Icon(Icons.send), onPressed: () {
-                  if (textController.text.isNotEmpty) {
-                    aiProvider.sendMessage(textController.text, browserProvider);
-                    textController.clear();
-                  }
-                }),
-              ),
-              onSubmitted: (value) {
-                if (value.isNotEmpty) {
-                   aiProvider.sendMessage(value, browserProvider);
-                   textController.clear();
-                }
-              },
+          TextField(
+            controller: textController,
+            decoration: InputDecoration(
+              hintText: "Try 'Open incognito' or 'Dark mode'",
+              suffixIcon: IconButton(icon: const Icon(Icons.send), onPressed: () {
+                aiProvider.sendMessage(textController.text, browserProvider);
+                textController.clear();
+              }),
             ),
+            onSubmitted: (v) {
+               aiProvider.sendMessage(v, browserProvider);
+               textController.clear();
+            },
           )
         ],
       ),
