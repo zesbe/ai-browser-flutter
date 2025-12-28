@@ -35,7 +35,7 @@ class AiBrowserApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Neon AI Browser Pro',
+      title: 'Neon AI Browser Real',
       theme: ThemeData(
         useMaterial3: true,
         brightness: Brightness.dark,
@@ -52,7 +52,7 @@ class AiBrowserApp extends StatelessWidget {
   }
 }
 
-// --- LOGIC CORE (REAL FUNCTIONS) ---
+// --- LOGIC CORE ---
 
 class HistoryItem {
   final String url;
@@ -78,7 +78,7 @@ class BrowserProvider extends ChangeNotifier {
   int currentTabIndex = 0;
   List<HistoryItem> history = [];
   
-  // Persistent Settings
+  // Settings
   String searchEngine = "https://www.google.com/search?q=";
   bool isDesktopMode = false;
   bool isAdBlockEnabled = true;
@@ -107,12 +107,12 @@ class BrowserProvider extends ChangeNotifier {
       allowsInlineMediaPlayback: true,
       cacheEnabled: !currentTab.isIncognito,
       domStorageEnabled: !currentTab.isIncognito,
-      useWideViewPort: true, // Crucial for Desktop mode
+      useWideViewPort: true,
       safeBrowsingEnabled: true,
       mixedContentMode: MixedContentMode.MIXED_CONTENT_COMPATIBILITY_MODE,
       userAgent: isDesktopMode
           ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-          : "" // Empty string = Default Android UserAgent
+          : ""
     );
   }
 
@@ -120,7 +120,6 @@ class BrowserProvider extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     searchEngine = prefs.getString('searchEngine') ?? "https://www.google.com/search?q=";
     isAdBlockEnabled = prefs.getBool('adBlock') ?? true;
-    
     final historyList = prefs.getStringList('history') ?? [];
     history = historyList.map((e) => HistoryItem.fromJson(jsonDecode(e))).toList();
     notifyListeners();
@@ -206,13 +205,10 @@ class BrowserProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  // --- REAL FUNCTIONALITY IMPLEMENTATIONS ---
-
   void toggleDesktopMode() async {
     isDesktopMode = !isDesktopMode;
-    // Apply new settings to current webview
     await currentTab.controller?.setSettings(settings: getSettings());
-    reload(); // Must reload to send new User Agent
+    reload();
     notifyListeners();
   }
 
@@ -239,17 +235,12 @@ class BrowserProvider extends ChangeNotifier {
 
   Future<void> shareScreenshot(BuildContext context) async {
     try {
-      // 1. Capture to memory
       final image = await currentTab.controller?.takeScreenshot();
-      if (image == null) return;
-
-      // 2. Save to temp file
+      if (image == null) throw Exception("Capture failed");
       final tempDir = await getTemporaryDirectory();
-      final file = File('${tempDir.path}/screenshot_${DateTime.now().millisecondsSinceEpoch}.png');
+      final file = File('${tempDir.path}/snap_${DateTime.now().millisecondsSinceEpoch}.png');
       await file.writeAsBytes(image);
-
-      // 3. Share the file
-      await Share.shareXFiles([XFile(file.path)], text: 'Screenshot from Neon Browser');
+      await Share.shareXFiles([XFile(file.path)], text: 'Snap from Neon Browser');
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e")));
     }
@@ -257,20 +248,13 @@ class BrowserProvider extends ChangeNotifier {
 
   void injectScripts(InAppWebViewController controller) {
     if (isAdBlockEnabled) {
-      // Powerful AdBlocker (Repeated check for lazy loaded ads)
       String js = """
         (function() {
-          var css = '.ad, .ads, .advertisement, [id^="google_ads"], iframe[src*="ads"], div[class*="sponsored"], a[href*="doubleclick"] { display: none !important; visibility: hidden !important; height: 0 !important; }';
+          var css = '.ad, .ads, .advertisement, [id^="google_ads"], iframe[src*="ads"], div[class*="sponsored"] { display: none !important; visibility: hidden !important; height: 0 !important; }';
           var style = document.createElement('style');
           style.type = 'text/css';
           style.appendChild(document.createTextNode(css));
           document.head.appendChild(style);
-          
-          // Interval to kill lazy-loaded ads
-          setInterval(function() {
-             var ads = document.querySelectorAll('.ad, .ads, iframe[src*="ads"]');
-             ads.forEach(function(el) { el.remove(); });
-          }, 2000);
         })();
       """;
       controller.evaluateJavascript(source: js);
@@ -289,6 +273,8 @@ class BrowserProvider extends ChangeNotifier {
           notifyListeners();
         }
       });
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Mic Permission Denied")));
     }
   }
 
@@ -298,7 +284,7 @@ class BrowserProvider extends ChangeNotifier {
 }
 
 class AiAgentProvider extends ChangeNotifier {
-  List<ChatMessage> messages = [ChatMessage(text: "Neon Core Online. Systems Nominal.", isUser: false)];
+  List<ChatMessage> messages = [ChatMessage(text: "Browser Command Interface Online.\nTry 'Go to Google' or 'Switch to Desktop'.", isUser: false)];
   bool isThinking = false;
 
   void sendMessage(String text, BrowserProvider browser) async {
@@ -308,9 +294,29 @@ class AiAgentProvider extends ChangeNotifier {
     await Future.delayed(const Duration(seconds: 1));
     
     String response = "Command processed.";
-    if (text.toLowerCase().contains("clear")) {
+    String lower = text.toLowerCase();
+    
+    // REAL COMMAND PARSING
+    if (lower.contains("google")) {
+      browser.loadUrl("https://google.com");
+      response = "Navigating to Google.";
+    } else if (lower.contains("youtube")) {
+      browser.loadUrl("https://youtube.com");
+      response = "Opening YouTube.";
+    } else if (lower.contains("desktop")) {
+      browser.toggleDesktopMode();
+      response = "Desktop Mode ${browser.isDesktopMode ? "Activated" : "Deactivated"}.";
+    } else if (lower.contains("adblock")) {
+      browser.toggleAdBlock();
+      response = "AdBlock ${browser.isAdBlockEnabled ? "Active" : "Disabled"}.";
+    } else if (lower.contains("clear") || lower.contains("delete")) {
       browser.clearData();
-      response = "Privacy wipe complete. Cache and history cleared.";
+      response = "Browsing data wiped.";
+    } else if (lower.contains("incognito") || lower.contains("private")) {
+      browser._addNewTab("https://google.com", true);
+      response = "New Private Tab opened.";
+    } else {
+      response = "I can browse, change settings, or secure data. Be specific.";
     }
     
     messages.add(ChatMessage(text: response, isUser: false));
@@ -444,6 +450,7 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
                               alignment: Alignment.centerLeft,
                               child: Row(
                                 children: [
+                                  if (browser.currentTab.isIncognito) const Padding(padding: EdgeInsets.only(right: 8), child: Icon(Iconsax.mask, size: 14, color: Colors.purpleAccent)),
                                   Icon(browser.isSecure ? Iconsax.lock5 : Iconsax.unlock, size: 12, color: browser.isSecure ? Colors.greenAccent : Colors.redAccent),
                                   const SizedBox(width: 8),
                                   Expanded(child: Text(browser.currentTab.url.replaceFirst("https://", ""), style: const TextStyle(color: Colors.white70, fontSize: 13), overflow: TextOverflow.ellipsis)),
@@ -486,15 +493,17 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
   }
 
   Widget _buildGridMenu(BuildContext context, BrowserProvider browser) {
+    // Definisi tombol menu dengan feedback langsung
     final items = [
-      {'icon': Iconsax.arrow_left_2, 'label': 'Back', 'action': browser.goBack},
-      {'icon': Iconsax.arrow_right_3, 'label': 'Forward', 'action': browser.goForward},
-      {'icon': Iconsax.refresh, 'label': 'Reload', 'action': browser.reload},
-      {'icon': Iconsax.add, 'label': 'New Tab', 'action': () { browser._addNewTab(); browser.toggleMenu(); }},
-      {'icon': Iconsax.eye_slash, 'label': 'Zen Mode', 'action': () { browser.toggleZenMode(); browser.toggleMenu(); }},
-      {'icon': Iconsax.monitor, 'label': 'Desktop', 'action': () { browser.toggleDesktopMode(); browser.toggleMenu(); }},
-      {'icon': Iconsax.camera, 'label': 'Share Snap', 'action': () { browser.shareScreenshot(context); browser.toggleMenu(); }},
+      {'icon': Iconsax.arrow_left_2, 'label': 'Back', 'action': () { browser.goBack(); }},
+      {'icon': Iconsax.arrow_right_3, 'label': 'Forward', 'action': () { browser.goForward(); }},
+      {'icon': Iconsax.refresh, 'label': 'Reload', 'action': () { browser.reload(); }},
+      {'icon': Iconsax.add, 'label': 'New Tab', 'action': () { browser._addNewTab(); browser.toggleMenu(); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("New Tab Opened"), duration: Duration(milliseconds: 500))); }},
+      {'icon': Iconsax.mask, 'label': 'Incognito', 'action': () { browser._addNewTab("https://google.com", true); browser.toggleMenu(); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Incognito Mode"), duration: Duration(milliseconds: 500))); }},
+      {'icon': Iconsax.monitor, 'label': 'Desktop', 'action': () { browser.toggleDesktopMode(); ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Desktop Mode ${browser.isDesktopMode ? "ON" : "OFF"}"), duration: const Duration(milliseconds: 500))); }},
+      {'icon': Iconsax.camera, 'label': 'Snap', 'action': () { browser.shareScreenshot(context); browser.toggleMenu(); }},
       {'icon': Iconsax.clock, 'label': 'History', 'action': () { _showHistoryModal(context, browser); }},
+      {'icon': Iconsax.eye_slash, 'label': 'Zen Mode', 'action': () { browser.toggleZenMode(); browser.toggleMenu(); }},
       {'icon': Iconsax.setting, 'label': 'Settings', 'action': () { _showSettingsModal(context, browser); }},
     ];
 
@@ -548,6 +557,7 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
               alignment: Alignment.centerLeft,
               child: Row(
                 children: [
+                  if (tab.isIncognito) const Padding(padding: EdgeInsets.only(right: 4), child: Icon(Iconsax.mask, size: 10, color: Colors.purpleAccent)),
                   Expanded(child: Text(tab.title, style: TextStyle(color: isActive ? Colors.white : Colors.white54, fontSize: 10), overflow: TextOverflow.ellipsis)),
                   GestureDetector(onTap: () => browser.closeTab(index), child: const Icon(Icons.close, size: 12, color: Colors.white30))
                 ],
@@ -564,9 +574,9 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
       const Padding(padding: EdgeInsets.all(16), child: Text("History", style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold))),
       Expanded(child: ListView.builder(itemCount: browser.history.length, itemBuilder: (_, i) {
         final item = browser.history[i];
-        return ListTile(title: Text(item.title, style: const TextStyle(color: Colors.white)), subtitle: Text(item.url, style: const TextStyle(color: Colors.grey)), onTap: () { browser.loadUrl(item.url); Navigator.pop(context); browser.isMenuOpen = false; });
+        return ListTile(title: Text(item.title, style: const TextStyle(color: Colors.white), maxLines: 1), subtitle: Text(item.url, style: const TextStyle(color: Colors.grey), maxLines: 1), onTap: () { browser.loadUrl(item.url); Navigator.pop(context); browser.isMenuOpen = false; });
       })),
-      TextButton(onPressed: () { browser.clearData(); Navigator.pop(context); }, child: const Text("Clear All Data", style: TextStyle(color: Colors.red)))
+      TextButton(onPressed: () { browser.clearData(); Navigator.pop(context); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("History Cleared"))); }, child: const Text("Clear All Data", style: TextStyle(color: Colors.red)))
     ])));
   }
 
@@ -578,9 +588,8 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
       ListTile(title: const Text("Search Engine", style: TextStyle(color: Colors.white)), subtitle: Text(browser.searchEngine.contains("google") ? "Google" : "DuckDuckGo", style: const TextStyle(color: Colors.grey)), onTap: () {
         browser.setSearchEngine(browser.searchEngine.contains("google") ? "https://duckduckgo.com/?q=" : "https://www.google.com/search?q=");
         Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Switched to ${browser.searchEngine.contains("google") ? "Google" : "DuckDuckGo"}")));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Engine: ${browser.searchEngine.contains("google") ? "Google" : "DuckDuckGo"}")));
       }),
-      ListTile(title: const Text("Version", style: TextStyle(color: Colors.white)), subtitle: const Text("Neon Pro v1.0", style: TextStyle(color: Colors.grey))),
     ]))));
   }
 
@@ -633,17 +642,49 @@ class AiAgentPanel extends StatelessWidget {
   const AiAgentPanel({super.key});
   @override
   Widget build(BuildContext context) {
+    final aiProvider = Provider.of<AiAgentProvider>(context, listen: false);
     final browser = Provider.of<BrowserProvider>(context, listen: false);
+    final textController = TextEditingController();
+
     return Container(
-      height: MediaQuery.of(context).size.height * 0.5,
+      height: MediaQuery.of(context).size.height * 0.7,
       decoration: const BoxDecoration(color: Color(0xFF1E1E1E), borderRadius: BorderRadius.vertical(top: Radius.circular(30))),
       child: Column(children: [
-         const SizedBox(height: 20),
+         const SizedBox(height: 10),
+         Container(width: 40, height: 4, decoration: BoxDecoration(color: Colors.grey, borderRadius: BorderRadius.circular(2))),
+         const SizedBox(height: 10),
          const Icon(Iconsax.magic_star, size: 40, color: Color(0xFF00FFC2)),
-         const Text("Neon AI", style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
-         const SizedBox(height: 20),
-         ListTile(leading: const Icon(Icons.cleaning_services, color: Colors.white), title: const Text("Clear Data", style: TextStyle(color: Colors.white)), onTap: () { browser.clearData(); Navigator.pop(context); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Data Cleared"))); }),
-         ListTile(leading: const Icon(Icons.shield, color: Colors.white), title: const Text("Toggle AdBlock", style: TextStyle(color: Colors.white)), onTap: () { browser.toggleAdBlock(); Navigator.pop(context); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("AdBlock Toggled"))); }),
+         const Text("Neon Core AI", style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+         const Divider(color: Colors.white12),
+         Expanded(child: ListView.builder(
+           padding: const EdgeInsets.all(16),
+           itemCount: aiProvider.messages.length,
+           itemBuilder: (ctx, i) {
+             final msg = aiProvider.messages[i];
+             return Align(alignment: msg.isUser ? Alignment.centerRight : Alignment.centerLeft, child: Container(margin: const EdgeInsets.symmetric(vertical: 4), padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: msg.isUser ? const Color(0xFF00FFC2).withOpacity(0.2) : Colors.white10, borderRadius: BorderRadius.circular(12)), child: Text(msg.text, style: const TextStyle(color: Colors.white))));
+           }
+         )),
+         if (aiProvider.isThinking) const LinearProgressIndicator(minHeight: 2, color: Color(0xFF00FFC2)),
+         Padding(padding: const EdgeInsets.all(16), child: TextField(
+           controller: textController,
+           style: const TextStyle(color: Colors.white),
+           decoration: InputDecoration(
+             hintText: "Command me (e.g. 'Open Youtube')",
+             hintStyle: const TextStyle(color: Colors.white30),
+             filled: true, fillColor: Colors.black26,
+             border: OutlineInputBorder(borderRadius: BorderRadius.circular(30), borderSide: BorderSide.none),
+             suffixIcon: IconButton(icon: const Icon(Icons.send, color: Color(0xFF00FFC2)), onPressed: () {
+               if (textController.text.isNotEmpty) {
+                 aiProvider.sendMessage(textController.text, browser);
+                 textController.clear();
+               }
+             }),
+           ),
+           onSubmitted: (v) {
+             if (v.isNotEmpty) { aiProvider.sendMessage(v, browser); textController.clear(); }
+           },
+         )),
+         SizedBox(height: MediaQuery.of(context).viewInsets.bottom),
       ]),
     );
   }
