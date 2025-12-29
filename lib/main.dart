@@ -132,10 +132,74 @@ class UserScript {
 class DownloadItem {
   final String id, url, filename;
   int progress;
-  String status; // downloading, completed, failed
+  String status; // downloading, completed, failed, paused
   final DateTime startedAt;
-  DownloadItem({required this.url, required this.filename, String? id, this.progress = 0, this.status = "downloading", DateTime? startedAt})
-    : id = id ?? const Uuid().v4(), startedAt = startedAt ?? DateTime.now();
+  String? filePath;
+  int? totalBytes;
+  int downloadedBytes;
+  DownloadItem({
+    required this.url,
+    required this.filename,
+    String? id,
+    this.progress = 0,
+    this.status = "downloading",
+    DateTime? startedAt,
+    this.filePath,
+    this.totalBytes,
+    this.downloadedBytes = 0,
+  }) : id = id ?? const Uuid().v4(), startedAt = startedAt ?? DateTime.now();
+}
+
+// User Agent Presets
+class UserAgentPreset {
+  final String name;
+  final String ua;
+  final IconData icon;
+
+  const UserAgentPreset({required this.name, required this.ua, required this.icon});
+
+  static const List<UserAgentPreset> presets = [
+    UserAgentPreset(
+      name: "Default",
+      ua: "",
+      icon: Iconsax.mobile,
+    ),
+    UserAgentPreset(
+      name: "Android Mobile",
+      ua: "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+      icon: Iconsax.mobile,
+    ),
+    UserAgentPreset(
+      name: "iOS Mobile",
+      ua: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+      icon: Iconsax.apple,
+    ),
+    UserAgentPreset(
+      name: "Desktop Chrome",
+      ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      icon: Iconsax.monitor,
+    ),
+    UserAgentPreset(
+      name: "Desktop Safari",
+      ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15",
+      icon: Iconsax.monitor,
+    ),
+    UserAgentPreset(
+      name: "Desktop Firefox",
+      ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0",
+      icon: Iconsax.monitor,
+    ),
+    UserAgentPreset(
+      name: "iPad",
+      ua: "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+      icon: Iconsax.mobile,
+    ),
+    UserAgentPreset(
+      name: "Bot/Crawler",
+      ua: "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+      icon: Iconsax.code_1,
+    ),
+  ];
 }
 
 // --- PROVIDERS ---
@@ -177,6 +241,7 @@ class BrowserProvider extends ChangeNotifier {
 
   String searchEngine = "https://www.google.com/search?q=";
   String customUserAgent = "";
+  String currentUserAgentPreset = "Default";
   bool isDesktopMode = false, isAdBlockEnabled = true, isForceDarkWeb = false, isJsEnabled = true, isImagesEnabled = true;
   bool isBiometricEnabled = false, isZenMode = false, isGameMode = false, isLocked = false;
   bool isTrackingProtection = true, isPopupBlocked = true, isCookiesEnabled = true;
@@ -268,6 +333,8 @@ class BrowserProvider extends ChangeNotifier {
     isPopupBlocked = prefs.getBool('popupBlocked') ?? true;
     blockedAdsCount = prefs.getInt('blockedAds') ?? 0;
     blockedTrackersCount = prefs.getInt('blockedTrackers') ?? 0;
+    customUserAgent = prefs.getString('customUserAgent') ?? "";
+    currentUserAgentPreset = prefs.getString('userAgentPreset') ?? "Default";
     int? colorValue = prefs.getInt('neonColor'); if (colorValue != null) neonColor = Color(colorValue);
 
     history = (prefs.getStringList('history') ?? []).map((e) => HistoryItem.fromJson(jsonDecode(e))).toList();
@@ -304,6 +371,8 @@ class BrowserProvider extends ChangeNotifier {
     prefs.setBool('popupBlocked', isPopupBlocked);
     prefs.setInt('blockedAds', blockedAdsCount);
     prefs.setInt('blockedTrackers', blockedTrackersCount);
+    prefs.setString('customUserAgent', customUserAgent);
+    prefs.setString('userAgentPreset', currentUserAgentPreset);
     prefs.setInt('neonColor', neonColor.value);
     prefs.setStringList('history', history.map((e) => jsonEncode(e.toJson())).toList());
     prefs.setStringList('bookmarks', bookmarks.map((e) => jsonEncode(e.toJson())).toList());
@@ -560,6 +629,21 @@ class BrowserProvider extends ChangeNotifier {
   // DoH DNS
   void toggleDoh() { isDohEnabled = !isDohEnabled; _saveData(); notifyListeners(); }
   void setDohProvider(String provider) { dohProvider = provider; _saveData(); notifyListeners(); }
+
+  // User Agent
+  void setUserAgent(String preset, [String? customUa]) async {
+    currentUserAgentPreset = preset;
+    if (customUa != null) {
+      customUserAgent = customUa;
+    } else {
+      final presetObj = UserAgentPreset.presets.firstWhere((p) => p.name == preset, orElse: () => UserAgentPreset.presets[0]);
+      customUserAgent = presetObj.ua;
+    }
+    await _saveData();
+    await currentTab.controller?.setSettings(settings: getSettings());
+    reload();
+    notifyListeners();
+  }
 
   // Privacy
   void toggleTrackingProtection() { isTrackingProtection = !isTrackingProtection; _saveData(); reload(); notifyListeners(); }
