@@ -28,13 +28,18 @@ jobs:
       - name: Generate Platform Files
         run: |
           flutter create . --platforms android --project-name ai_browser_agent
+
+          # Fix Gradle version - AGP 8.1.0 requires Gradle 8.0+
+          sed -i 's/gradle-7.6.3-all.zip/gradle-8.3-all.zip/' android/gradle/wrapper/gradle-wrapper.properties
+          sed -i 's/gradle-7.5-all.zip/gradle-8.3-all.zip/' android/gradle/wrapper/gradle-wrapper.properties
+
           # Tambahkan izin internet dan microphone ke AndroidManifest.xml
           sed -i '/<application/i \    <uses-permission android:name="android.permission.INTERNET" />' android/app/src/main/AndroidManifest.xml
           sed -i '/<application/i \    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />' android/app/src/main/AndroidManifest.xml
           sed -i '/<application/i \    <uses-permission android:name="android.permission.RECORD_AUDIO" />' android/app/src/main/AndroidManifest.xml
           sed -i '/<application/i \    <uses-permission android:name="android.permission.BLUETOOTH" />' android/app/src/main/AndroidManifest.xml
           sed -i '/<application/i \    <uses-permission android:name="android.permission.USE_BIOMETRIC" />' android/app/src/main/AndroidManifest.xml
-          
+
           # Add Queries for url_launcher
           sed -i '/<application/i \    <queries><intent><action android:name="android.intent.action.VIEW" /><data android:scheme="https" /></intent><intent><action android:name="android.intent.action.VIEW" /><data android:scheme="http" /></intent></queries>' android/app/src/main/AndroidManifest.xml
 
