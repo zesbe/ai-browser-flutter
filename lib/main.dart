@@ -154,8 +154,14 @@ class BrowserProvider extends ChangeNotifier {
       domStorageEnabled: !currentTab.isIncognito,
       useWideViewPort: true,
       safeBrowsingEnabled: true,
-      mixedContentMode: MixedContentMode.MIXED_CONTENT_COMPATIBILITY_MODE,
-      userAgent: customUserAgent.isNotEmpty ? customUserAgent : (isDesktopMode ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" : "")
+      mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
+      allowFileAccessFromFileURLs: true,
+      allowUniversalAccessFromFileURLs: true,
+      supportMultipleWindows: true,
+      disableHorizontalScroll: false,
+      disableVerticalScroll: false,
+      hardwareAcceleration: true,
+      userAgent: customUserAgent.isNotEmpty ? customUserAgent : (isDesktopMode ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" : "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36")
     );
   }
 
@@ -263,11 +269,51 @@ class BrowserProvider extends ChangeNotifier {
   }
 
   void loadUrl(String url) {
-    if (url == "home" || url == "neon://home") { updateUrl("neon://home"); return; }
-    if (!url.startsWith("http")) {
-      url = (url.contains(".") && !url.contains(" ")) ? "https://$url" : "$searchEngine$url";
+    // Handle empty or null URL
+    if (url == null || url.trim().isEmpty) {
+      url = "neon://home";
+      updateUrl(url);
+      return;
     }
-    currentTab.controller?.loadUrl(urlRequest: URLRequest(url: WebUri(url)));
+
+    url = url.trim();
+
+    // Handle home page
+    if (url == "home" || url == "neon://home" || url == "about:home") {
+      updateUrl("neon://home");
+      return;
+    }
+
+    // Handle special URLs
+    if (url.startsWith("neon://")) {
+      updateUrl(url);
+      return;
+    }
+
+    // Check if URL already has protocol
+    if (!url.startsWith("http://") && !url.startsWith("https://")) {
+      // Check if it looks like a search query (contains spaces) or a URL (contains dots)
+      if (url.contains(" ") || !url.contains(".")) {
+        // This is a search query
+        String encodedQuery = Uri.encodeComponent(url);
+        url = "$searchEngine$encodedQuery";
+      } else {
+        // This is a URL without protocol
+        url = "https://$url";
+      }
+    }
+
+    // Load the URL
+    try {
+      final uri = WebUri(url);
+      currentTab.controller?.loadUrl(urlRequest: URLRequest(url: uri));
+    } catch (e) {
+      // Fallback to search if URL parsing fails
+      String encodedQuery = Uri.encodeComponent(url);
+      final searchUri = WebUri("$searchEngine$encodedQuery");
+      currentTab.controller?.loadUrl(urlRequest: URLRequest(url: searchUri));
+    }
+
     notifyListeners();
   }
 
