@@ -41,7 +41,7 @@ class AiBrowserApp extends StatelessWidget {
   Widget build(BuildContext context) {
     final browser = Provider.of<BrowserProvider>(context);
     return MaterialApp(
-      title: 'Neon AI Browser Ultimate',
+      title: 'Luxor Browser',
       theme: ThemeData(
         useMaterial3: true,
         brightness: Brightness.dark,
@@ -126,7 +126,7 @@ class BrowserProvider extends ChangeNotifier {
   bool isDesktopMode = false, isAdBlockEnabled = true, isForceDarkWeb = false, isJsEnabled = true, isImagesEnabled = true;
   bool isBiometricEnabled = false, isZenMode = false, isGameMode = false, isLocked = true;
   int blockedAdsCount = 0;
-  Color neonColor = const Color(0xFF00FFC2);
+  Color neonColor = const Color(0xFFFFD700); // Luxor Gold
 
   double progress = 0;
   bool isSecure = true, isMenuOpen = false, showFindBar = false, showAiSidebar = false, showTabGrid = false;
@@ -270,9 +270,9 @@ class BrowserProvider extends ChangeNotifier {
 
   void loadUrl(String url) {
     // Handle empty or null URL
-    if (url == null || url.trim().isEmpty) {
-      url = "neon://home";
-      updateUrl(url);
+    if (url.trim().isEmpty) {
+      updateUrl("neon://home");
+      notifyListeners();
       return;
     }
 
@@ -281,12 +281,14 @@ class BrowserProvider extends ChangeNotifier {
     // Handle home page
     if (url == "home" || url == "neon://home" || url == "about:home") {
       updateUrl("neon://home");
+      notifyListeners();
       return;
     }
 
     // Handle special URLs
     if (url.startsWith("neon://")) {
       updateUrl(url);
+      notifyListeners();
       return;
     }
 
@@ -303,16 +305,27 @@ class BrowserProvider extends ChangeNotifier {
       }
     }
 
-    // Load the URL
-    try {
-      final uri = WebUri(url);
-      currentTab.controller?.loadUrl(urlRequest: URLRequest(url: uri));
-    } catch (e) {
-      // Fallback to search if URL parsing fails
-      String encodedQuery = Uri.encodeComponent(url);
-      final searchUri = WebUri("$searchEngine$encodedQuery");
-      currentTab.controller?.loadUrl(urlRequest: URLRequest(url: searchUri));
+    // IMPORTANT: Update the tab URL BEFORE notifying listeners
+    // This ensures WebView is shown instead of StartPage
+    currentTab.url = url;
+    urlController.text = url;
+    isSecure = url.startsWith("https://");
+
+    // Try to load URL if controller exists
+    if (currentTab.controller != null) {
+      try {
+        final uri = WebUri(url);
+        currentTab.controller!.loadUrl(urlRequest: URLRequest(url: uri));
+      } catch (e) {
+        // Fallback to search if URL parsing fails
+        String encodedQuery = Uri.encodeComponent(url);
+        final searchUrl = "$searchEngine$encodedQuery";
+        currentTab.url = searchUrl;
+        final searchUri = WebUri(searchUrl);
+        currentTab.controller!.loadUrl(urlRequest: URLRequest(url: searchUri));
+      }
     }
+    // If controller is null, WebView will be created with initialUrlRequest
 
     notifyListeners();
   }
@@ -352,7 +365,7 @@ class BrowserProvider extends ChangeNotifier {
   Future<void> checkBiometricLock(BuildContext context) async {
     if (!isBiometricEnabled) { isLocked = false; notifyListeners(); return; }
     try {
-      if (await auth.authenticate(localizedReason: 'Unlock Neon Browser', options: const AuthenticationOptions(stickyAuth: true))) {
+      if (await auth.authenticate(localizedReason: 'Unlock Luxor Browser', options: const AuthenticationOptions(stickyAuth: true))) {
         isLocked = false;
         notifyListeners();
       }
@@ -418,7 +431,7 @@ class BrowserProvider extends ChangeNotifier {
 }
 
 class AiAgentProvider extends ChangeNotifier {
-  List<ChatMessage> messages = [ChatMessage(text: "Neon AI Online.", isUser: false)];
+  List<ChatMessage> messages = [ChatMessage(text: "Luxor AI Ready.", isUser: false)];
   bool isThinking = false;
   void sendMessage(String text, BrowserProvider b) async {
     messages.add(ChatMessage(text: text, isUser: true));

@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Outer Ring - Gold -->
+    <path
+        android:fillColor="#FFD700"
+        android:pathData="M54,20 A34,34 0 1,1 54,88 A34,34 0 1,1 54,20 M54,26 A28,28 0 1,0 54,82 A28,28 0 1,0 54,26"/>
+
+    <!-- Inner Globe Lines -->
+    <path
+        android:strokeColor="#FFD700"
+        android:strokeWidth="1.5"
+        android:fillColor="#00000000"
+        android:pathData="M54,30 A24,24 0 1,1 54,78 A24,24 0 1,1 54,30"/>
+
+    <!-- Horizontal line -->
+    <path
+        android:strokeColor="#FFD700"
+        android:strokeWidth="1.5"
+        android:pathData="M30,54 L78,54"/>
+
+    <!-- Vertical ellipse -->
+    <path
+        android:strokeColor="#FFD700"
+        android:strokeWidth="1.5"
+        android:fillColor="#00000000"
+        android:pathData="M54,30 Q42,54 54,78 Q66,54 54,30"/>
+
+    <!-- Pyramid in center -->
+    <path
+        android:fillColor="#FFD700"
+        android:pathData="M54,38 L66,62 L42,62 Z"/>
+
+    <!-- Eye of Horus detail -->
+    <path
+        android:fillColor="#1A1A2E"
+        android:pathData="M54,48 L58,56 L50,56 Z"/>
+
+    <!-- Sparkle top right -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M72,36 L74,38 L72,40 L70,38 Z"/>
+
+    <!-- Sparkle bottom left -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M36,68 L38,70 L36,72 L34,70 Z"/>
+</vector>
