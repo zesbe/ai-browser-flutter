@@ -41,6 +41,10 @@ jobs:
           # Update minSdkVersion to 23 for modern plugins
           sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 23/' android/app/build.gradle
 
+          # Fix Biometric: Change FlutterActivity to FlutterFragmentActivity
+          sed -i 's/import io.flutter.embedding.android.FlutterActivity/import io.flutter.embedding.android.FlutterFragmentActivity/' android/app/src/main/kotlin/com/example/ai_browser_agent/MainActivity.kt
+          sed -i 's/class MainActivity: FlutterActivity()/class MainActivity: FlutterFragmentActivity()/' android/app/src/main/kotlin/com/example/ai_browser_agent/MainActivity.kt
+
       - name: Install Dependencies
         run: flutter pub get
 
