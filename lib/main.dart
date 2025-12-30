@@ -1227,6 +1227,7 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
       _menuItem(Iconsax.share, "Share", () { b.sharePage(); b.toggleMenu(); }),
       _menuItem(Iconsax.printer, "Print", () { b.printPage(); b.toggleMenu(); }),
       _menuItem(Iconsax.game, "Game Mode", () { b.toggleGameMode(); b.toggleMenu(); }),
+      _menuItem(Iconsax.info_circle, "Page Info", () { b.toggleMenu(); _showPageInfo(context, b); }),
       _menuItem(Iconsax.setting_2, "Settings", () { b.toggleMenu(); _showSettings(context, b); }),
     ]
   );
@@ -1401,14 +1402,153 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
 
   void _showDownloads(BuildContext context, BrowserProvider b) {
     showModalBottomSheet(
+      context: context, backgroundColor: const Color(0xFF101010), isScrollControlled: true,
+      builder: (_) => DraggableScrollableSheet(
+        initialChildSize: 0.7, minChildSize: 0.5, maxChildSize: 0.95, expand: false,
+        builder: (_, controller) => Container(
+          padding: const EdgeInsets.all(16),
+          child: Column(children: [
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              Text("Downloads (${b.downloads.length})", style: TextStyle(color: b.neonColor, fontSize: 18, fontWeight: FontWeight.bold)),
+              if (b.downloads.isNotEmpty) TextButton(onPressed: () { b.downloads.clear(); Navigator.pop(context); }, child: const Text("Clear All", style: TextStyle(color: Colors.red))),
+            ]),
+            const SizedBox(height: 16),
+            Expanded(
+              child: b.downloads.isEmpty
+                ? const Center(child: Text("No downloads yet", style: TextStyle(color: Colors.white54)))
+                : ListView.builder(
+                    controller: controller,
+                    itemCount: b.downloads.length,
+                    itemBuilder: (_, i) {
+                      final dl = b.downloads[i];
+                      return Card(
+                        color: const Color(0xFF1A1A1A),
+                        child: ListTile(
+                          leading: Icon(
+                            dl.status == "completed" ? Iconsax.tick_circle : dl.status == "failed" ? Iconsax.close_circle : Iconsax.document_download,
+                            color: dl.status == "completed" ? Colors.green : dl.status == "failed" ? Colors.red : b.neonColor,
+                          ),
+                          title: Text(dl.filename, style: const TextStyle(color: Colors.white), maxLines: 1, overflow: TextOverflow.ellipsis),
+                          subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                dl.status == "completed" ? "Completed" : dl.status == "failed" ? "Failed" : "Downloading...",
+                                style: TextStyle(color: Colors.grey, fontSize: 11),
+                              ),
+                              if (dl.status == "downloading") LinearProgressIndicator(value: dl.progress / 100, color: b.neonColor, backgroundColor: Colors.grey),
+                              if (dl.totalBytes != null) Text(
+                                "${(dl.downloadedBytes / 1024 / 1024).toStringAsFixed(2)} MB / ${(dl.totalBytes! / 1024 / 1024).toStringAsFixed(2)} MB",
+                                style: const TextStyle(color: Colors.grey, fontSize: 10),
+                              ),
+                            ],
+                          ),
+                          trailing: dl.status == "completed"
+                            ? IconButton(icon: const Icon(Iconsax.folder_open, color: Colors.white54), onPressed: () {})
+                            : IconButton(icon: const Icon(Icons.delete, color: Colors.red), onPressed: () => b.removeDownload(dl.id)),
+                        ),
+                      );
+                    },
+                  ),
+            ),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  void _showPageInfo(BuildContext context, BrowserProvider b) async {
+    final tab = b.currentTab;
+    if (tab.url == "luxor://home") return;
+
+    String? pageSize;
+    String? loadTime;
+
+    if (tab.loadStartTime != null) {
+      final duration = DateTime.now().difference(tab.loadStartTime!);
+      loadTime = "${duration.inMilliseconds}ms";
+    }
+
+    showModalBottomSheet(
       context: context, backgroundColor: const Color(0xFF101010),
       builder: (_) => Container(
-        height: 400, padding: const EdgeInsets.all(16),
-        child: Column(children: [
-          Text("Downloads", style: TextStyle(color: b.neonColor, fontSize: 18, fontWeight: FontWeight.bold)),
+        padding: const EdgeInsets.all(20),
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text("Page Information", style: TextStyle(color: b.neonColor, fontSize: 20, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 20),
+
+          _infoRow(Iconsax.global, "URL", tab.url, b),
+          _infoRow(Iconsax.document_text, "Title", tab.title, b),
+          _infoRow(b.isSecure ? Iconsax.lock : Iconsax.unlock, "Security", b.isSecure ? "Secure (HTTPS)" : "Not Secure (HTTP)", b),
+
+          if (b.sslCertificate != null) ...[
+            const Divider(color: Colors.white24),
+            Text("SSL Certificate", style: TextStyle(color: b.neonColor, fontSize: 14, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            _infoRow(Iconsax.user, "Issued to", b.sslCertificate!.issuedTo?.CName ?? "Unknown", b),
+            _infoRow(Iconsax.shield_tick, "Issued by", b.sslCertificate!.issuedBy?.CName ?? "Unknown", b),
+          ],
+
+          const Divider(color: Colors.white24),
+          if (loadTime != null) _infoRow(Iconsax.timer, "Load Time", loadTime, b),
+          _infoRow(Iconsax.code, "User Agent", b.currentUserAgentPreset, b),
+
           const SizedBox(height: 16),
-          const Expanded(child: Center(child: Text("Downloads will appear here", style: TextStyle(color: Colors.white54)))),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: () {
+                Navigator.pop(context);
+                _showSiteSettings(context, b);
+              },
+              icon: const Icon(Iconsax.setting_2),
+              label: const Text("Site Settings"),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: b.neonColor,
+                foregroundColor: Colors.black,
+                padding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+            ),
+          ),
         ]),
+      ),
+    );
+  }
+
+  Widget _infoRow(IconData icon, String label, String value, BrowserProvider b) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 18, color: b.neonColor),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label, style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                const SizedBox(height: 2),
+                Text(value, style: const TextStyle(color: Colors.white, fontSize: 14), maxLines: 3, overflow: TextOverflow.ellipsis),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showSiteSettings(BuildContext context, BrowserProvider b) {
+    // TODO: Implement site-specific settings
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: const Color(0xFF222222),
+        title: Text("Site Settings", style: TextStyle(color: b.neonColor)),
+        content: const Text("Site-specific settings coming soon!", style: TextStyle(color: Colors.white)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("OK")),
+        ],
       ),
     );
   }
@@ -1442,6 +1582,14 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
             SwitchListTile(activeColor: b.neonColor, title: const Text("JavaScript", style: TextStyle(color: Colors.white)), value: b.isJsEnabled, onChanged: (v) { b.toggleJs(); setState((){}); }),
             SwitchListTile(activeColor: b.neonColor, title: const Text("Load Images", style: TextStyle(color: Colors.white)), value: b.isImagesEnabled, onChanged: (v) { b.toggleDataSaver(); setState((){}); }),
             SwitchListTile(activeColor: b.neonColor, title: const Text("Desktop Mode", style: TextStyle(color: Colors.white)), value: b.isDesktopMode, onChanged: (v) { b.toggleDesktopMode(); setState((){}); }),
+
+            _settingsSection("User Agent", b),
+            ListTile(
+              title: const Text("Current User Agent", style: TextStyle(color: Colors.white)),
+              subtitle: Text(b.currentUserAgentPreset, style: const TextStyle(color: Colors.grey, fontSize: 12)),
+              trailing: const Icon(Icons.chevron_right, color: Colors.white54),
+              onTap: () => _showUserAgentPicker(context, b, setState),
+            ),
 
             _settingsSection("Search Engine", b),
             _searchEngineTile(b, "Google", "https://www.google.com/search?q=", setState),
@@ -1484,6 +1632,79 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
           activeColor: b.neonColor,
           onChanged: (v) { b.setDohProvider(v!); setState((){}); Navigator.pop(context); },
         )).toList()),
+      ),
+    );
+  }
+
+  void _showUserAgentPicker(BuildContext context, BrowserProvider b, StateSetter setState) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: const Color(0xFF222222),
+        title: Text("Select User Agent", style: TextStyle(color: b.neonColor)),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView(
+            shrinkWrap: true,
+            children: UserAgentPreset.presets.map((preset) => RadioListTile<String>(
+              title: Row(
+                children: [
+                  Icon(preset.icon, color: Colors.white54, size: 20),
+                  const SizedBox(width: 12),
+                  Expanded(child: Text(preset.name, style: const TextStyle(color: Colors.white))),
+                ],
+              ),
+              value: preset.name,
+              groupValue: b.currentUserAgentPreset,
+              activeColor: b.neonColor,
+              onChanged: (v) {
+                b.setUserAgent(v!);
+                setState((){});
+                Navigator.pop(context);
+              },
+            )).toList(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => _showCustomUADialog(context, b, setState),
+            child: Text("Custom UA", style: TextStyle(color: b.neonColor)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showCustomUADialog(BuildContext context, BrowserProvider b, StateSetter setState) {
+    final controller = TextEditingController(text: b.customUserAgent);
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: const Color(0xFF222222),
+        title: Text("Custom User Agent", style: TextStyle(color: b.neonColor)),
+        content: TextField(
+          controller: controller,
+          style: const TextStyle(color: Colors.white),
+          maxLines: 4,
+          decoration: const InputDecoration(
+            hintText: "Enter custom user agent string...",
+            hintStyle: TextStyle(color: Colors.grey),
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
+          TextButton(
+            onPressed: () {
+              if (controller.text.isNotEmpty) {
+                b.setUserAgent("Custom", controller.text);
+                setState((){});
+              }
+              Navigator.pop(context);
+            },
+            child: const Text("Apply")
+          ),
+        ],
       ),
     );
   }
