@@ -69,6 +69,7 @@ class BrowserTab {
   Uint8List? thumbnail;
   String? favicon;
   int progress = 0;
+  DateTime? loadStartTime;
   BrowserTab({required this.id, this.url = "luxor://home", this.title = "Start Page", this.isIncognito = false});
 }
 
@@ -172,7 +173,7 @@ class UserAgentPreset {
     UserAgentPreset(
       name: "iOS Mobile",
       ua: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-      icon: Iconsax.apple,
+      icon: Icons.phone_iphone,
     ),
     UserAgentPreset(
       name: "Desktop Chrome",
@@ -732,6 +733,11 @@ class BrowserProvider extends ChangeNotifier {
     }
   }
 
+  void removeDownload(String id) {
+    downloads.removeWhere((d) => d.id == id);
+    notifyListeners();
+  }
+
   // History
   void addToHistory(String u, String? t, [int? tabIndex]) {
     final tab = tabIndex != null && tabIndex < tabs.length ? tabs[tabIndex] : currentTab;
@@ -1135,7 +1141,7 @@ class _BrowserHomePageState extends State<BrowserHomePage> with TickerProviderSt
       initialSettings: browser.getSettings(tabIndex),
       pullToRefreshController: isSplit ? null : _pullToRefreshController,
       onWebViewCreated: (c) => browser.setController(c, tabIndex),
-      onLoadStart: (c, url) => browser.updateUrl(url.toString(), tabIndex),
+      onLoadStart: (c, url) { browser.tabs[tabIndex].loadStartTime = DateTime.now(); browser.updateUrl(url.toString(), tabIndex); },
       onLoadStop: (c, url) async {
         if (tabIndex == browser.currentTabIndex) browser.progress = 1.0;
         browser.updateUrl(url.toString(), tabIndex);
