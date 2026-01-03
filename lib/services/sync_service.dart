@@ -1,0 +1,663 @@
+import 'dart:async';
+import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
+
+// ============================================================================
+// SYNC SERVICE - Google Account Synchronization like Chrome
+// ============================================================================
+
+class SyncService extends ChangeNotifier {
+  static final SyncService _instance = SyncService._internal();
+  factory SyncService() => _instance;
+  SyncService._internal();
+
+  // Google Sign In
+  final GoogleSignIn _googleSignIn = GoogleSignIn(
+    scopes: [
+      'email',
+      'profile',
+    ],
+  );
+
+  // Firebase instances
+  FirebaseAuth? _auth;
+  FirebaseFirestore? _firestore;
+
+  // State
+  User? _currentUser;
+  GoogleSignInAccount? _googleUser;
+  bool _isInitialized = false;
+  bool _isSyncing = false;
+  bool _syncEnabled = true;
+  DateTime? _lastSyncTime;
+  String? _syncError;
+  StreamSubscription? _connectivitySubscription;
+  bool _isOnline = true;
+
+  // Sync Settings
+  bool syncBookmarks = true;
+  bool syncHistory = true;
+  bool syncReadingList = true;
+  bool syncSettings = true;
+  bool syncPasswords = false; // Disabled by default for security
+  bool syncOpenTabs = true;
+
+  // Getters
+  User? get currentUser => _currentUser;
+  GoogleSignInAccount? get googleUser => _googleUser;
+  bool get isSignedIn => _currentUser != null;
+  bool get isSyncing => _isSyncing;
+  bool get syncEnabled => _syncEnabled;
+  DateTime? get lastSyncTime => _lastSyncTime;
+  String? get syncError => _syncError;
+  bool get isOnline => _isOnline;
+  String get userEmail => _currentUser?.email ?? _googleUser?.email ?? '';
+  String get userName => _currentUser?.displayName ?? _googleUser?.displayName ?? 'User';
+  String? get userPhotoUrl => _currentUser?.photoURL ?? _googleUser?.photoUrl;
+
+  // Initialize Firebase and check for existing sign-in
+  Future<void> initialize() async {
+    if (_isInitialized) return;
+
+    try {
+      await Firebase.initializeApp();
+      _auth = FirebaseAuth.instance;
+      _firestore = FirebaseFirestore.instance;
+
+      // Listen to auth state changes
+      _auth!.authStateChanges().listen((User? user) {
+        _currentUser = user;
+        notifyListeners();
+        if (user != null && _syncEnabled) {
+          _performSync();
+        }
+      });
+
+      // Check connectivity
+      _connectivitySubscription = Connectivity().onConnectivityChanged.listen((result) {
+        _isOnline = result != ConnectivityResult.none;
+        notifyListeners();
+        if (_isOnline && isSignedIn && _syncEnabled) {
+          _performSync();
+        }
+      });
+
+      // Load sync preferences
+      await _loadSyncPreferences();
+
+      // Check for existing Google Sign-In
+      _googleUser = await _googleSignIn.signInSilently();
+      if (_googleUser != null) {
+        await _signInToFirebase(_googleUser!);
+      }
+
+      _isInitialized = true;
+      notifyListeners();
+    } catch (e) {
+      _syncError = 'Initialization failed: $e';
+      notifyListeners();
+    }
+  }
+
+  // Load sync preferences from SharedPreferences
+  Future<void> _loadSyncPreferences() async {
+    final prefs = await SharedPreferences.getInstance();
+    _syncEnabled = prefs.getBool('sync_enabled') ?? true;
+    syncBookmarks = prefs.getBool('sync_bookmarks') ?? true;
+    syncHistory = prefs.getBool('sync_history') ?? true;
+    syncReadingList = prefs.getBool('sync_reading_list') ?? true;
+    syncSettings = prefs.getBool('sync_settings') ?? true;
+    syncPasswords = prefs.getBool('sync_passwords') ?? false;
+    syncOpenTabs = prefs.getBool('sync_open_tabs') ?? true;
+
+    final lastSync = prefs.getString('last_sync_time');
+    if (lastSync != null) {
+      _lastSyncTime = DateTime.tryParse(lastSync);
+    }
+  }
+
+  // Save sync preferences
+  Future<void> _saveSyncPreferences() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('sync_enabled', _syncEnabled);
+    await prefs.setBool('sync_bookmarks', syncBookmarks);
+    await prefs.setBool('sync_history', syncHistory);
+    await prefs.setBool('sync_reading_list', syncReadingList);
+    await prefs.setBool('sync_settings', syncSettings);
+    await prefs.setBool('sync_passwords', syncPasswords);
+    await prefs.setBool('sync_open_tabs', syncOpenTabs);
+    if (_lastSyncTime != null) {
+      await prefs.setString('last_sync_time', _lastSyncTime!.toIso8601String());
+    }
+  }
+
+  // Sign in with Google
+  Future<bool> signInWithGoogle() async {
+    try {
+      _syncError = null;
+
+      // Trigger Google Sign-In flow
+      final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
+      if (googleUser == null) {
+        _syncError = 'Sign-in cancelled';
+        notifyListeners();
+        return false;
+      }
+
+      _googleUser = googleUser;
+
+      // Sign in to Firebase
+      final success = await _signInToFirebase(googleUser);
+
+      if (success) {
+        await _performSync();
+      }
+
+      return success;
+    } catch (e) {
+      _syncError = 'Sign-in failed: $e';
+      notifyListeners();
+      return false;
+    }
+  }
+
+  // Sign in to Firebase with Google credentials
+  Future<bool> _signInToFirebase(GoogleSignInAccount googleUser) async {
+    try {
+      final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
+
+      final credential = GoogleAuthProvider.credential(
+        accessToken: googleAuth.accessToken,
+        idToken: googleAuth.idToken,
+      );
+
+      final userCredential = await _auth!.signInWithCredential(credential);
+      _currentUser = userCredential.user;
+      notifyListeners();
+      return true;
+    } catch (e) {
+      _syncError = 'Firebase sign-in failed: $e';
+      notifyListeners();
+      return false;
+    }
+  }
+
+  // Sign out
+  Future<void> signOut() async {
+    try {
+      await _googleSignIn.signOut();
+      await _auth?.signOut();
+      _currentUser = null;
+      _googleUser = null;
+      _syncError = null;
+      notifyListeners();
+    } catch (e) {
+      _syncError = 'Sign-out failed: $e';
+      notifyListeners();
+    }
+  }
+
+  // Toggle sync enabled/disabled
+  Future<void> setSyncEnabled(bool enabled) async {
+    _syncEnabled = enabled;
+    await _saveSyncPreferences();
+    notifyListeners();
+
+    if (enabled && isSignedIn) {
+      await _performSync();
+    }
+  }
+
+  // Update individual sync settings
+  Future<void> updateSyncSetting(String setting, bool value) async {
+    switch (setting) {
+      case 'bookmarks':
+        syncBookmarks = value;
+        break;
+      case 'history':
+        syncHistory = value;
+        break;
+      case 'reading_list':
+        syncReadingList = value;
+        break;
+      case 'settings':
+        syncSettings = value;
+        break;
+      case 'passwords':
+        syncPasswords = value;
+        break;
+      case 'open_tabs':
+        syncOpenTabs = value;
+        break;
+    }
+    await _saveSyncPreferences();
+    notifyListeners();
+  }
+
+  // ============================================================================
+  // SYNC OPERATIONS
+  // ============================================================================
+
+  // Main sync function
+  Future<void> _performSync() async {
+    if (!isSignedIn || !_syncEnabled || _isSyncing || !_isOnline) return;
+
+    _isSyncing = true;
+    _syncError = null;
+    notifyListeners();
+
+    try {
+      final userId = _currentUser!.uid;
+      final userDoc = _firestore!.collection('users').doc(userId);
+
+      // Sync each data type
+      if (syncBookmarks) await _syncBookmarks(userDoc);
+      if (syncHistory) await _syncHistory(userDoc);
+      if (syncReadingList) await _syncReadingList(userDoc);
+      if (syncSettings) await _syncSettings(userDoc);
+      if (syncOpenTabs) await _syncOpenTabs(userDoc);
+
+      _lastSyncTime = DateTime.now();
+      await _saveSyncPreferences();
+    } catch (e) {
+      _syncError = 'Sync failed: $e';
+    }
+
+    _isSyncing = false;
+    notifyListeners();
+  }
+
+  // Force sync now
+  Future<void> syncNow() async {
+    await _performSync();
+  }
+
+  // ============================================================================
+  // BOOKMARKS SYNC
+  // ============================================================================
+
+  Future<void> _syncBookmarks(DocumentReference userDoc) async {
+    final prefs = await SharedPreferences.getInstance();
+    final localData = prefs.getString('bookmarks');
+    final localBookmarks = localData != null
+        ? List<Map<String, dynamic>>.from(jsonDecode(localData))
+        : <Map<String, dynamic>>[];
+
+    // Get cloud data
+    final cloudDoc = await userDoc.collection('sync_data').doc('bookmarks').get();
+    final cloudBookmarks = cloudDoc.exists
+        ? List<Map<String, dynamic>>.from(cloudDoc.data()?['items'] ?? [])
+        : <Map<String, dynamic>>[];
+
+    // Merge bookmarks (cloud takes priority for conflicts, but keep all unique)
+    final merged = _mergeData(localBookmarks, cloudBookmarks, 'id');
+
+    // Save to cloud
+    await userDoc.collection('sync_data').doc('bookmarks').set({
+      'items': merged,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+
+    // Save locally
+    await prefs.setString('bookmarks', jsonEncode(merged));
+  }
+
+  // ============================================================================
+  // HISTORY SYNC
+  // ============================================================================
+
+  Future<void> _syncHistory(DocumentReference userDoc) async {
+    final prefs = await SharedPreferences.getInstance();
+    final localData = prefs.getString('history');
+    final localHistory = localData != null
+        ? List<Map<String, dynamic>>.from(jsonDecode(localData))
+        : <Map<String, dynamic>>[];
+
+    // Get cloud data
+    final cloudDoc = await userDoc.collection('sync_data').doc('history').get();
+    final cloudHistory = cloudDoc.exists
+        ? List<Map<String, dynamic>>.from(cloudDoc.data()?['items'] ?? [])
+        : <Map<String, dynamic>>[];
+
+    // Merge history by URL + timestamp (keep last 1000 items)
+    final merged = _mergeHistory(localHistory, cloudHistory);
+
+    // Save to cloud
+    await userDoc.collection('sync_data').doc('history').set({
+      'items': merged,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+
+    // Save locally
+    await prefs.setString('history', jsonEncode(merged));
+  }
+
+  List<Map<String, dynamic>> _mergeHistory(
+    List<Map<String, dynamic>> local,
+    List<Map<String, dynamic>> cloud
+  ) {
+    final Map<String, Map<String, dynamic>> merged = {};
+
+    // Add cloud items first
+    for (var item in cloud) {
+      final key = '${item['url']}_${item['timestamp']}';
+      merged[key] = item;
+    }
+
+    // Add local items (won't overwrite if already exists)
+    for (var item in local) {
+      final key = '${item['url']}_${item['timestamp']}';
+      merged.putIfAbsent(key, () => item);
+    }
+
+    // Sort by timestamp descending and limit to 1000
+    final list = merged.values.toList();
+    list.sort((a, b) {
+      final aTime = DateTime.tryParse(a['timestamp'] ?? '') ?? DateTime(2000);
+      final bTime = DateTime.tryParse(b['timestamp'] ?? '') ?? DateTime(2000);
+      return bTime.compareTo(aTime);
+    });
+
+    return list.take(1000).toList();
+  }
+
+  // ============================================================================
+  // READING LIST SYNC
+  // ============================================================================
+
+  Future<void> _syncReadingList(DocumentReference userDoc) async {
+    final prefs = await SharedPreferences.getInstance();
+    final localData = prefs.getString('reading_list');
+    final localItems = localData != null
+        ? List<Map<String, dynamic>>.from(jsonDecode(localData))
+        : <Map<String, dynamic>>[];
+
+    // Get cloud data
+    final cloudDoc = await userDoc.collection('sync_data').doc('reading_list').get();
+    final cloudItems = cloudDoc.exists
+        ? List<Map<String, dynamic>>.from(cloudDoc.data()?['items'] ?? [])
+        : <Map<String, dynamic>>[];
+
+    // Merge
+    final merged = _mergeData(localItems, cloudItems, 'id');
+
+    // Save to cloud
+    await userDoc.collection('sync_data').doc('reading_list').set({
+      'items': merged,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+
+    // Save locally
+    await prefs.setString('reading_list', jsonEncode(merged));
+  }
+
+  // ============================================================================
+  // SETTINGS SYNC
+  // ============================================================================
+
+  Future<void> _syncSettings(DocumentReference userDoc) async {
+    final prefs = await SharedPreferences.getInstance();
+
+    final localSettings = {
+      'search_engine': prefs.getString('search_engine') ?? 'google',
+      'home_page': prefs.getString('home_page') ?? 'luxor://home',
+      'javascript_enabled': prefs.getBool('javascript_enabled') ?? true,
+      'ad_blocker_enabled': prefs.getBool('ad_blocker_enabled') ?? false,
+      'dark_mode': prefs.getBool('dark_mode') ?? true,
+      'neon_color': prefs.getInt('neon_color') ?? 0xFFFFD700,
+      'text_scale': prefs.getDouble('text_scale') ?? 1.0,
+      'desktop_mode': prefs.getBool('desktop_mode') ?? false,
+    };
+
+    // Get cloud settings
+    final cloudDoc = await userDoc.collection('sync_data').doc('settings').get();
+
+    if (cloudDoc.exists) {
+      final cloudSettings = cloudDoc.data() ?? {};
+      // Merge: use cloud value if exists, otherwise local
+      for (var key in cloudSettings.keys) {
+        if (key != 'updatedAt' && cloudSettings[key] != null) {
+          localSettings[key] = cloudSettings[key];
+        }
+      }
+    }
+
+    // Save to cloud
+    await userDoc.collection('sync_data').doc('settings').set({
+      ...localSettings,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+
+    // Apply settings locally
+    await prefs.setString('search_engine', localSettings['search_engine'] as String);
+    await prefs.setString('home_page', localSettings['home_page'] as String);
+    await prefs.setBool('javascript_enabled', localSettings['javascript_enabled'] as bool);
+    await prefs.setBool('ad_blocker_enabled', localSettings['ad_blocker_enabled'] as bool);
+    await prefs.setBool('dark_mode', localSettings['dark_mode'] as bool);
+    await prefs.setInt('neon_color', localSettings['neon_color'] as int);
+    await prefs.setDouble('text_scale', localSettings['text_scale'] as double);
+    await prefs.setBool('desktop_mode', localSettings['desktop_mode'] as bool);
+  }
+
+  // ============================================================================
+  // OPEN TABS SYNC
+  // ============================================================================
+
+  Future<void> _syncOpenTabs(DocumentReference userDoc) async {
+    final prefs = await SharedPreferences.getInstance();
+    final localData = prefs.getString('open_tabs');
+    final localTabs = localData != null
+        ? List<Map<String, dynamic>>.from(jsonDecode(localData))
+        : <Map<String, dynamic>>[];
+
+    // Get cloud tabs from other devices
+    final cloudDoc = await userDoc.collection('sync_data').doc('open_tabs').get();
+
+    // Get device ID
+    final deviceId = prefs.getString('device_id') ?? _generateDeviceId(prefs);
+
+    // Save current device's tabs
+    await userDoc.collection('sync_data').doc('open_tabs').set({
+      'devices': {
+        deviceId: {
+          'tabs': localTabs,
+          'updatedAt': FieldValue.serverTimestamp(),
+          'deviceName': await _getDeviceName(),
+        }
+      }
+    }, SetOptions(merge: true));
+  }
+
+  String _generateDeviceId(SharedPreferences prefs) {
+    final id = DateTime.now().millisecondsSinceEpoch.toString();
+    prefs.setString('device_id', id);
+    return id;
+  }
+
+  Future<String> _getDeviceName() async {
+    // Could use device_info_plus for actual device name
+    return 'Luxor Browser Device';
+  }
+
+  // Get tabs from other devices
+  Future<Map<String, List<Map<String, dynamic>>>> getOtherDevicesTabs() async {
+    if (!isSignedIn) return {};
+
+    final prefs = await SharedPreferences.getInstance();
+    final deviceId = prefs.getString('device_id') ?? '';
+
+    final doc = await _firestore!
+        .collection('users')
+        .doc(_currentUser!.uid)
+        .collection('sync_data')
+        .doc('open_tabs')
+        .get();
+
+    if (!doc.exists) return {};
+
+    final devices = doc.data()?['devices'] as Map<String, dynamic>? ?? {};
+    final result = <String, List<Map<String, dynamic>>>{};
+
+    for (var entry in devices.entries) {
+      if (entry.key != deviceId) {
+        final deviceData = entry.value as Map<String, dynamic>;
+        result[deviceData['deviceName'] ?? entry.key] =
+            List<Map<String, dynamic>>.from(deviceData['tabs'] ?? []);
+      }
+    }
+
+    return result;
+  }
+
+  // ============================================================================
+  // HELPER METHODS
+  // ============================================================================
+
+  List<Map<String, dynamic>> _mergeData(
+    List<Map<String, dynamic>> local,
+    List<Map<String, dynamic>> cloud,
+    String idField,
+  ) {
+    final Map<String, Map<String, dynamic>> merged = {};
+
+    // Add local items
+    for (var item in local) {
+      final id = item[idField]?.toString() ?? '';
+      if (id.isNotEmpty) merged[id] = item;
+    }
+
+    // Cloud items take priority
+    for (var item in cloud) {
+      final id = item[idField]?.toString() ?? '';
+      if (id.isNotEmpty) merged[id] = item;
+    }
+
+    return merged.values.toList();
+  }
+
+  // ============================================================================
+  // REAL-TIME SYNC LISTENER
+  // ============================================================================
+
+  StreamSubscription? _syncListener;
+
+  void startRealtimeSync() {
+    if (!isSignedIn || _syncListener != null) return;
+
+    _syncListener = _firestore!
+        .collection('users')
+        .doc(_currentUser!.uid)
+        .collection('sync_data')
+        .snapshots()
+        .listen((snapshot) {
+          // Trigger local update when cloud data changes
+          _handleCloudUpdate(snapshot);
+        });
+  }
+
+  void stopRealtimeSync() {
+    _syncListener?.cancel();
+    _syncListener = null;
+  }
+
+  void _handleCloudUpdate(QuerySnapshot snapshot) async {
+    final prefs = await SharedPreferences.getInstance();
+
+    for (var change in snapshot.docChanges) {
+      if (change.type == DocumentChangeType.modified) {
+        final docId = change.doc.id;
+        final data = change.doc.data() as Map<String, dynamic>?;
+
+        if (data != null) {
+          switch (docId) {
+            case 'bookmarks':
+              await prefs.setString('bookmarks', jsonEncode(data['items'] ?? []));
+              break;
+            case 'history':
+              await prefs.setString('history', jsonEncode(data['items'] ?? []));
+              break;
+            case 'reading_list':
+              await prefs.setString('reading_list', jsonEncode(data['items'] ?? []));
+              break;
+          }
+        }
+      }
+    }
+
+    notifyListeners();
+  }
+
+  // Cleanup
+  void dispose() {
+    _connectivitySubscription?.cancel();
+    stopRealtimeSync();
+    super.dispose();
+  }
+}
+
+// ============================================================================
+// SYNC STATUS WIDGET - Shows sync status in UI
+// ============================================================================
+
+class SyncStatusIndicator extends StatelessWidget {
+  final SyncService syncService;
+
+  const SyncStatusIndicator({super.key, required this.syncService});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: syncService,
+      builder: (context, _) {
+        if (!syncService.isSignedIn) {
+          return const SizedBox.shrink();
+        }
+
+        if (syncService.isSyncing) {
+          return const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 8),
+            child: SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          );
+        }
+
+        if (syncService.syncError != null) {
+          return IconButton(
+            icon: const Icon(Icons.sync_problem, color: Colors.red, size: 20),
+            onPressed: () => syncService.syncNow(),
+            tooltip: syncService.syncError,
+          );
+        }
+
+        return IconButton(
+          icon: Icon(
+            Icons.sync,
+            color: syncService.isOnline ? Colors.green : Colors.grey,
+            size: 20,
+          ),
+          onPressed: () => syncService.syncNow(),
+          tooltip: syncService.lastSyncTime != null
+              ? 'Last sync: ${_formatTime(syncService.lastSyncTime!)}'
+              : 'Tap to sync',
+        );
+      },
+    );
+  }
+
+  String _formatTime(DateTime time) {
+    final diff = DateTime.now().difference(time);
+    if (diff.inMinutes < 1) return 'Just now';
+    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+    if (diff.inHours < 24) return '${diff.inHours}h ago';
+    return '${diff.inDays}d ago';
+  }
+}

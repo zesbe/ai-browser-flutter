@@ -25,6 +25,12 @@ dependencies:
   wakelock_plus: ^1.1.4
   local_auth: ^2.1.8
   uuid: ^4.3.3
+  # Google Sign-In & Firebase for Sync
+  google_sign_in: ^6.2.1
+  firebase_core: ^2.27.0
+  firebase_auth: ^4.17.8
+  cloud_firestore: ^4.15.8
+  connectivity_plus: ^5.0.2
 
 dev_dependencies:
   flutter_test:
