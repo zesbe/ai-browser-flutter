@@ -19,6 +19,7 @@ class SyncService extends ChangeNotifier {
 
   // Google Sign In
   final GoogleSignIn _googleSignIn = GoogleSignIn(
+    serverClientId: '414348456164-crp31lg5i2ng5lpi3qj7kfth8atkcslt.apps.googleusercontent.com',
     scopes: [
       'email',
       'profile',
