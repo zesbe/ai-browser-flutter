@@ -33,7 +33,17 @@ jobs:
 
       - name: Generate Platform Files
         run: |
+          # Backup our custom build.gradle and keystore before flutter create
+          cp android/app/build.gradle /tmp/build.gradle.backup
+          cp android/app/luxor-debug.keystore /tmp/luxor-debug.keystore.backup
+          cp android/app/google-services.json /tmp/google-services.json.backup
+
           flutter create . --platforms android --project-name ai_browser_agent
+
+          # Restore our custom build.gradle with signing config
+          cp /tmp/build.gradle.backup android/app/build.gradle
+          cp /tmp/luxor-debug.keystore.backup android/app/luxor-debug.keystore
+          cp /tmp/google-services.json.backup android/app/google-services.json
 
           # Fix Gradle version - AGP 8.1.0 requires Gradle 8.0+
           sed -i 's/gradle-7.6.3-all.zip/gradle-8.3-all.zip/' android/gradle/wrapper/gradle-wrapper.properties
