@@ -805,16 +805,32 @@ class SyncService extends ChangeNotifier {
         allowedExtensions: ['csv'],
       );
 
-      if (result == null) return 0;
+      if (result == null) {
+        debugPrint('CSV Import: No file selected');
+        return 0;
+      }
 
       final file = File(result.files.single.path!);
       final csvContent = await file.readAsString();
-      final csvTable = const CsvToListConverter().convert(csvContent);
+      debugPrint('CSV Import: File loaded, size=${csvContent.length} bytes');
+
+      // Parse CSV with proper handling of quoted fields (Chrome format)
+      final csvTable = const CsvToListConverter(
+        shouldParseNumbers: false, // Keep everything as strings
+        allowInvalid: true, // Don't fail on malformed rows
+      ).convert(csvContent);
+
+      debugPrint('CSV Import: Parsed ${csvTable.length} rows');
 
       if (csvTable.isEmpty) {
-        _syncError = 'Invalid CSV file';
+        _syncError = 'Invalid CSV file - no data found';
         notifyListeners();
         return 0;
+      }
+
+      // Check header format
+      if (csvTable.isNotEmpty) {
+        debugPrint('CSV Import: Header = ${csvTable.first}');
       }
 
       // Skip header row
@@ -824,30 +840,51 @@ class SyncService extends ChangeNotifier {
       final existingPasswords = List<Map<String, dynamic>>.from(jsonDecode(existingData));
 
       int importedCount = 0;
-      final existingUrls = existingPasswords.map((p) => p['url']).toSet();
+      int skippedEmpty = 0;
+      int skippedDuplicate = 0;
+      int skippedInvalidRow = 0;
+
+      // Check URL+username combination, not just URL
+      final existingKeys = existingPasswords.map((p) => '${p['url']}|${p['username']}').toSet();
+      debugPrint('CSV Import: ${existingKeys.length} existing passwords');
 
       for (var row in dataRows) {
         if (row.length >= 4) {
           final url = row[1].toString().trim();
           final username = row[2].toString().trim();
           final password = row[3].toString().trim();
+          final key = '$url|$username';
 
-          // Skip if URL already exists or empty
-          if (url.isNotEmpty && password.isNotEmpty && !existingUrls.contains(url)) {
-            existingPasswords.add({
-              'id': DateTime.now().millisecondsSinceEpoch.toString() + Random().nextInt(1000).toString(),
-              'url': url,
-              'username': username,
-              'password': password,
-              'title': row[0].toString().trim().isNotEmpty ? row[0].toString().trim() : url,
-              'createdAt': DateTime.now().toIso8601String(),
-              'source': 'import',
-            });
-            importedCount++;
-            existingUrls.add(url);
+          // Skip if empty
+          if (url.isEmpty || password.isEmpty) {
+            skippedEmpty++;
+            continue;
           }
+
+          // Skip if URL+username combination already exists
+          if (existingKeys.contains(key)) {
+            skippedDuplicate++;
+            continue;
+          }
+
+          existingPasswords.add({
+            'id': DateTime.now().millisecondsSinceEpoch.toString() + Random().nextInt(1000).toString(),
+            'url': url,
+            'username': username,
+            'password': password,
+            'title': row[0].toString().trim().isNotEmpty ? row[0].toString().trim() : url,
+            'createdAt': DateTime.now().toIso8601String(),
+            'source': 'import',
+          });
+          importedCount++;
+          existingKeys.add(key);
+        } else {
+          skippedInvalidRow++;
+          debugPrint('CSV Import: Invalid row with ${row.length} columns: $row');
         }
       }
+
+      debugPrint('CSV Import: imported=$importedCount, skippedEmpty=$skippedEmpty, skippedDuplicate=$skippedDuplicate, skippedInvalid=$skippedInvalidRow');
 
       // Save updated passwords
       await prefs.setString('saved_passwords', jsonEncode(existingPasswords));
