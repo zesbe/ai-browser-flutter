@@ -800,42 +800,73 @@ class SyncService extends ChangeNotifier {
   // Import passwords from Chrome CSV export
   Future<int> importPasswordsFromCSV() async {
     try {
+      // Use withReadStream for reliable file reading on Android
       FilePickerResult? result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
         allowedExtensions: ['csv'],
-        withData: true, // IMPORTANT: Get file bytes directly on Android
+        withData: true,
+        withReadStream: true,
       );
 
-      if (result == null) {
+      if (result == null || result.files.isEmpty) {
         debugPrint('CSV Import: No file selected');
+        _syncError = 'No file selected';
+        notifyListeners();
         return 0;
       }
 
-      debugPrint('CSV Import: File picked - name=${result.files.single.name}');
-      debugPrint('CSV Import: path=${result.files.single.path}');
-      debugPrint('CSV Import: bytes=${result.files.single.bytes?.length}');
+      final pickedFile = result.files.single;
+      debugPrint('CSV Import: File picked - name=${pickedFile.name}');
+      debugPrint('CSV Import: path=${pickedFile.path}');
+      debugPrint('CSV Import: bytes length=${pickedFile.bytes?.length}');
+      debugPrint('CSV Import: has readStream=${pickedFile.readStream != null}');
 
-      String csvContent;
+      String csvContent = '';
 
-      // Try to get content from bytes first (more reliable on Android)
-      if (result.files.single.bytes != null) {
-        csvContent = utf8.decode(result.files.single.bytes!);
-        debugPrint('CSV Import: Loaded from bytes, size=${csvContent.length}');
-      } else if (result.files.single.path != null) {
-        // Fallback to path
-        final file = File(result.files.single.path!);
-        if (await file.exists()) {
-          csvContent = await file.readAsString();
-          debugPrint('CSV Import: Loaded from path, size=${csvContent.length}');
-        } else {
-          debugPrint('CSV Import: File does not exist at path');
-          _syncError = 'Could not read file';
-          notifyListeners();
-          return 0;
+      // Method 1: Try bytes first (fastest if available)
+      if (pickedFile.bytes != null && pickedFile.bytes!.isNotEmpty) {
+        try {
+          csvContent = utf8.decode(pickedFile.bytes!);
+          debugPrint('CSV Import: SUCCESS via bytes, size=${csvContent.length}');
+        } catch (e) {
+          debugPrint('CSV Import: bytes decode failed: $e');
         }
-      } else {
-        debugPrint('CSV Import: No bytes or path available');
-        _syncError = 'Could not read file - no data available';
+      }
+
+      // Method 2: Try readStream if bytes didn't work
+      if (csvContent.isEmpty && pickedFile.readStream != null) {
+        try {
+          final stream = pickedFile.readStream!;
+          final chunks = <int>[];
+          await for (final chunk in stream) {
+            chunks.addAll(chunk);
+          }
+          csvContent = utf8.decode(chunks);
+          debugPrint('CSV Import: SUCCESS via readStream, size=${csvContent.length}');
+        } catch (e) {
+          debugPrint('CSV Import: readStream failed: $e');
+        }
+      }
+
+      // Method 3: Try file path (might work on some Android versions)
+      if (csvContent.isEmpty && pickedFile.path != null) {
+        try {
+          final file = File(pickedFile.path!);
+          if (await file.exists()) {
+            csvContent = await file.readAsString();
+            debugPrint('CSV Import: SUCCESS via path, size=${csvContent.length}');
+          } else {
+            debugPrint('CSV Import: File not found at path: ${pickedFile.path}');
+          }
+        } catch (e) {
+          debugPrint('CSV Import: path read failed: $e');
+        }
+      }
+
+      // Check if we got any content
+      if (csvContent.isEmpty) {
+        debugPrint('CSV Import: FAILED - Could not read file with any method');
+        _syncError = 'Could not read file. Try copying the CSV to Downloads folder first.';
         notifyListeners();
         return 0;
       }
@@ -922,6 +953,21 @@ class SyncService extends ChangeNotifier {
 
       debugPrint('CSV Import: imported=$importedCount, skippedEmpty=$skippedEmpty, skippedDuplicate=$skippedDuplicate, skippedInvalid=$skippedInvalidRow');
 
+      // Set appropriate message
+      if (importedCount == 0) {
+        if (skippedDuplicate > 0) {
+          _syncError = 'All $skippedDuplicate passwords already exist';
+        } else if (skippedEmpty > 0) {
+          _syncError = 'No valid passwords found ($skippedEmpty empty)';
+        } else if (skippedInvalidRow > 0) {
+          _syncError = 'Invalid CSV format ($skippedInvalidRow invalid rows)';
+        } else {
+          _syncError = 'No passwords found in CSV file';
+        }
+        notifyListeners();
+        return 0;
+      }
+
       // Save updated passwords
       await prefs.setString('saved_passwords', jsonEncode(existingPasswords));
 
@@ -930,8 +976,12 @@ class SyncService extends ChangeNotifier {
         await _performSync();
       }
 
+      _syncError = null; // Clear any previous error
+      notifyListeners();
       return importedCount;
-    } catch (e) {
+    } catch (e, stackTrace) {
+      debugPrint('CSV Import: Exception: $e');
+      debugPrint('CSV Import: StackTrace: $stackTrace');
       _syncError = 'Import failed: $e';
       notifyListeners();
       return 0;

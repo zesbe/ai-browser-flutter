@@ -614,14 +614,43 @@ class _PasswordManagerPageState extends State<PasswordManagerPage> {
 
   Future<void> _importPasswords() async {
     try {
+      // Show loading indicator
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.white,
+                ),
+              ),
+              SizedBox(width: 12),
+              Text('Importing passwords...'),
+            ],
+          ),
+          backgroundColor: Colors.blue[700],
+          duration: const Duration(seconds: 30),
+        ),
+      );
+
       final count = await widget.syncService.importPasswordsFromCSV();
+
+      // Hide loading snackbar
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+
       if (count > 0) {
-        _showSuccess('Imported $count passwords successfully');
+        _showSuccess('Successfully imported $count passwords!');
         _loadPasswords();
       } else {
-        _showError('No passwords were imported. Check the CSV format.');
+        // Show detailed error from syncService
+        final errorMsg = widget.syncService.syncError ?? 'No passwords were imported';
+        _showError(errorMsg);
       }
     } catch (e) {
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
       _showError('Import failed: $e');
     }
   }
