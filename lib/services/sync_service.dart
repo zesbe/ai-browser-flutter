@@ -17,9 +17,8 @@ class SyncService extends ChangeNotifier {
   factory SyncService() => _instance;
   SyncService._internal();
 
-  // Google Sign In
+  // Google Sign In - simplified for Android
   final GoogleSignIn _googleSignIn = GoogleSignIn(
-    serverClientId: '414348456164-crp31lg5i2ng5lpi3qj7kfth8atkcslt.apps.googleusercontent.com',
     scopes: [
       'email',
       'profile',
