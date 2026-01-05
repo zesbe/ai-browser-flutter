@@ -190,6 +190,32 @@ class _PasswordManagerPageState extends State<PasswordManagerPage> {
             icon: Icon(Icons.refresh, color: widget.accentColor),
             onPressed: _loadPasswords,
           ),
+          PopupMenuButton<String>(
+            icon: Icon(Icons.more_vert, color: widget.accentColor),
+            onSelected: _handleMenuAction,
+            itemBuilder: (context) => [
+              const PopupMenuItem(
+                value: 'import',
+                child: Row(
+                  children: [
+                    Icon(Icons.upload_file, size: 18),
+                    SizedBox(width: 8),
+                    Text('Import from CSV'),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'export',
+                child: Row(
+                  children: [
+                    Icon(Icons.download, size: 18),
+                    SizedBox(width: 8),
+                    Text('Export to CSV'),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ],
       ),
       body: Column(
@@ -342,9 +368,9 @@ class _PasswordManagerPageState extends State<PasswordManagerPage> {
                 ),
                 const SizedBox(width: 12),
                 OutlinedButton.icon(
-                  onPressed: () => Navigator.pushNamed(context, '/sync-settings'),
+                  onPressed: _importPasswords,
                   icon: const Icon(Icons.upload_file, size: 18),
-                  label: const Text('Import'),
+                  label: const Text('Import CSV'),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: widget.accentColor,
                     side: BorderSide(color: widget.accentColor.withOpacity(0.5)),
@@ -568,6 +594,48 @@ class _PasswordManagerPageState extends State<PasswordManagerPage> {
       }
     } catch (e) {
       return Icon(Iconsax.key, color: widget.accentColor, size: 24);
+    }
+  }
+
+  // ============================================================================
+  // MENU ACTIONS (Import/Export)
+  // ============================================================================
+
+  void _handleMenuAction(String action) async {
+    switch (action) {
+      case 'import':
+        await _importPasswords();
+        break;
+      case 'export':
+        await _exportPasswords();
+        break;
+    }
+  }
+
+  Future<void> _importPasswords() async {
+    try {
+      final count = await widget.syncService.importPasswordsFromCSV();
+      if (count > 0) {
+        _showSuccess('Imported $count passwords successfully');
+        _loadPasswords();
+      } else {
+        _showError('No passwords were imported. Check the CSV format.');
+      }
+    } catch (e) {
+      _showError('Import failed: $e');
+    }
+  }
+
+  Future<void> _exportPasswords() async {
+    try {
+      final path = await widget.syncService.exportPasswordsToCSV();
+      if (path != null) {
+        _showSuccess('Passwords exported to: $path');
+      } else {
+        _showError('Export failed');
+      }
+    } catch (e) {
+      _showError('Export failed: $e');
     }
   }
 
